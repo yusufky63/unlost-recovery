@@ -4,6 +4,7 @@
 export const en = {
   app: {
     name: "Unlost",
+    fullName: "Unlost Recovery",
     tagline: "Deleted-file recovery that never writes to your drive.",
   },
   nav: {
@@ -33,7 +34,7 @@ export const en = {
     selected: "{{count}} selected · {{size}}",
     scanning: "Scanning…",
     loading: "Loading…",
-    desktopOnly: "Open the Unlost desktop app to use this view.",
+    desktopOnly: "Open the Unlost Recovery desktop app to use this view.",
     unknown: "Unknown",
     none: "None",
     size: "Size",

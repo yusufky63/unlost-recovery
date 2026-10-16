@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Unlost",
+  "productName": "Unlost Recovery",
   "mainBinaryName": "unlost",
   "version": "../package.json",
   "identifier": "io.github.yusufky63.unlost",
@@ -23,7 +23,7 @@
     "copyright": "Copyright (c) 2026 yusufky63 and contributors",
     "category": "Utility",
     "shortDescription": "Deleted-file recovery for Windows",
-    "longDescription": "Unlost recovers deleted files on Windows without writing to the drive they came from: Recycle Bin items, existing shadow copies, and deleted NTFS files, each with an honest recoverability state and a SHA-256 report.",
+    "longDescription": "Unlost Recovery recovers deleted files on Windows without writing to the drive they came from: Recycle Bin items, existing shadow copies, and deleted NTFS files, each with an honest recoverability state and a SHA-256 report.",
     "homepage": "https://github.com/yusufky63/unlost",
     "license": "MIT",
     "licenseFile": "../LICENSE",

@@ -1,5 +1,5 @@
 {
-  "name": "unlost",
+  "name": "unlost-recovery",
   "private": true,
   "version": "0.1.0",
   "description": "Open-source deleted-file recovery for Windows. Read-only by construction, honest about every file.",

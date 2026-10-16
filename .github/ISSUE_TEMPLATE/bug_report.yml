@@ -5,12 +5,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        If Unlost wrote to the drive you were recovering from, or a file marked "Likely intact" came back with wrong content, say so in the title. Those reports are handled first.
+        If Unlost Recovery wrote to the drive you were recovering from, or a file marked "Likely intact" came back with wrong content, say so in the title. Those reports are handled first.
         Do not attach recovered files or disk images that contain private data.
   - type: input
     id: version
     attributes:
-      label: Unlost version
+      label: Unlost Recovery version
       description: Settings > About.
       placeholder: 0.1.0
     validations:
