@@ -474,3 +474,26 @@ fn survives_random_damage() {
         }
     }
 }
+
+#[test]
+fn posix_deleted_folders_become_lost_folders() {
+    // Seen on Windows Server 2025: a folder deleted while open is renamed into
+    // \$Extend\$Deleted under its file id before it is freed.
+    let mut b = ImageBuilder::new(512, 4096, 1024, 64);
+    b.dir(11, 11, ROOT, "$Extend", true);
+    b.dir(30, 1, (11, 11), "$Deleted", true);
+    b.dir(31, 3, (30, 1), "000100000000002d55e3c67a", false);
+    let body = pattern(5000, 21);
+    b.file(FileSpec::new(
+        40,
+        "deep.bin",
+        (31, 2),
+        Content::Clusters(body.clone()),
+    ));
+    let src = MemSource::new(b.build());
+    let vol = NtfsVolume::open(&src as &dyn SectorSource).unwrap();
+    let res = scan_all(&vol, &ScanOptions::default(), &NoProgress).unwrap();
+    let f = find(&res, r"\Lost folder #31\deep.bin");
+    assert_eq!(res.status(f), Some(PathStatus::Lost));
+    assert_eq!(sha(&recover(&src, vol.cluster_size(), f)), sha(&body));
+}

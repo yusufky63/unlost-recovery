@@ -160,7 +160,16 @@ fn check(dir: &Path, m: &Manifest) {
             );
             continue;
         }
-        let row = by_path.get(&key).unwrap_or_else(|| {
+        // A folder deleted with POSIX semantics (Windows Server 2025 does this for open
+        // folders) loses its name, and its files come back under a lost folder: match those by
+        // name and size. Content checks below stay as strict.
+        let name = key.rsplit('\\').next().unwrap_or("").to_string();
+        let lost = page.rows.iter().find(|r| {
+            r.folder.starts_with("\\Lost folder #")
+                && r.name.to_lowercase() == name
+                && r.size == f.size
+        });
+        let row = by_path.get(&key).copied().or(lost).unwrap_or_else(|| {
             panic!(
                 "{}: {} not found among {:?}",
                 m.image,

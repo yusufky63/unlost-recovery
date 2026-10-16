@@ -28,3 +28,5 @@ pub use volume::{Bitmap, NtfsVolume};
 
 /// Root folder record number.
 pub const ROOT_RECORD: u64 = 5;
+/// `$Extend` metafile folder record number.
+pub const EXTEND_RECORD: u64 = 11;

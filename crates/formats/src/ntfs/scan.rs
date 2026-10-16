@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::magic;
-use crate::ntfs::ROOT_RECORD;
 use crate::ntfs::location;
 use crate::ntfs::record::{
     ATTR_ATTRIBUTE_LIST, ATTR_DATA, ATTR_FILE_NAME, ATTR_FLAG_COMPRESSION_MASK,
@@ -14,6 +13,7 @@ use crate::ntfs::record::{
 };
 use crate::ntfs::runlist::Run;
 use crate::ntfs::volume::{Bitmap, NtfsVolume, Piece, piece_of};
+use crate::ntfs::{EXTEND_RECORD, ROOT_RECORD};
 use crate::source::SectorSource;
 use crate::state::{Assessment, Reason, State};
 use crate::{Error, Progress, Result, filetime};
@@ -596,6 +596,7 @@ fn folder_path(parent: FileRef, dirs: &HashMap<u64, Dir>) -> (String, PathStatus
     let mut names: Vec<&str> = Vec::new();
     let mut seen: HashSet<u64> = HashSet::new();
     let mut cur = parent;
+    let mut below: Option<u64> = None;
     let mut status = PathStatus::Live;
     let lost = |names: &[&str], record: u64| {
         let mut p = format!("\\Lost folder #{record}");
@@ -624,10 +625,23 @@ fn folder_path(parent: FileRef, dirs: &HashMap<u64, Dir>) -> (String, PathStatus
         if !same {
             return lost(&names, cur.record);
         }
+        // Windows deletes open folders with POSIX semantics: the folder is renamed into
+        // `\$Extend\$Deleted` under its file id, so its own name and place are gone. Report it
+        // as lost instead of showing that internal path as if it were real.
+        if d.parent.record == EXTEND_RECORD && d.name.eq_ignore_ascii_case("$Deleted") {
+            return match below {
+                Some(renamed) => {
+                    names.pop();
+                    lost(&names, renamed)
+                }
+                None => lost(&names, cur.record),
+            };
+        }
         if !d.in_use {
             status = PathStatus::DeletedParent;
         }
         names.push(&d.name);
+        below = Some(cur.record);
         cur = d.parent;
     }
     if names.is_empty() {

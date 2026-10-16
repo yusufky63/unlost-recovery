@@ -472,7 +472,7 @@ pub fn run() {
             let mut attempt = 0;
             loop {
                 let built = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
-                    .title("Unlost")
+                    .title("Unlost Recovery")
                     .inner_size(1280.0, 840.0)
                     .min_inner_size(960.0, 640.0)
                     .center()
