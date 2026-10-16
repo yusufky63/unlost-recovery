@@ -1,0 +1,77 @@
+name: Bug report
+description: Something does not work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If Unlost wrote to the drive you were recovering from, or a file marked "Likely intact" came back with wrong content, say so in the title. Those reports are handled first.
+        Do not attach recovered files or disk images that contain private data.
+  - type: input
+    id: version
+    attributes:
+      label: Unlost version
+      description: Settings > About.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and build
+      placeholder: Windows 11 24H2 (26100.2033)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install type
+      options:
+        - Setup (.exe)
+        - MSI
+        - Portable zip
+        - Built from source
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: What were you recovering from?
+      options:
+        - Recycle Bin
+        - Previous versions (shadow copy)
+        - Internal SSD
+        - Internal hard disk
+        - USB stick or SD card
+        - External disk
+        - Disk image file
+    validations:
+      required: true
+  - type: input
+    id: drive
+    attributes:
+      label: File system and size
+      placeholder: NTFS, 64 GB, 4 KB clusters
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected and what you saw instead. Screenshots help; the state and reason shown for the file are useful.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Select drive E: on the first screen
+        2. Open Deleted files and scan
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Report lines
+      description: The matching lines from unlost-report.csv, with private names removed.
+      render: text

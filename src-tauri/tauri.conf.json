@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Unlost",
+  "mainBinaryName": "unlost",
+  "version": "../package.json",
+  "identifier": "io.github.yusufky63.unlost",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1430",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "publisher": "yusufky63",
+    "copyright": "Copyright (c) 2026 yusufky63 and contributors",
+    "category": "Utility",
+    "shortDescription": "Deleted-file recovery for Windows",
+    "longDescription": "Unlost recovers deleted files on Windows without writing to the drive they came from: Recycle Bin items, existing shadow copies, and deleted NTFS files, each with an honest recoverability state and a SHA-256 report.",
+    "homepage": "https://github.com/yusufky63/unlost",
+    "license": "MIT",
+    "licenseFile": "../LICENSE",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "Turkish"],
+        "displayLanguageSelector": true,
+        "installerIcon": "icons/icon.ico"
+      },
+      "wix": {
+        "language": ["en-US", "tr-TR"],
+        "upgradeCode": "6E0C2F51-8A3D-4C7B-9E14-5B2D7A9F3C60"
+      }
+    }
+  }
+}

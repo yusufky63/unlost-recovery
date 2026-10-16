@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      # The Tauri crate embeds the frontend at compile time, so build it before cargo.
+      - run: pnpm build
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  # Windows-made NTFS images and the tests that need administrator rights. Hosted Windows
+  # runners run as an administrator; the fixtures are built with TRIM off on this throwaway
+  # machine so every expectation is exact.
+  scenarios:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build VHDX fixtures
+        shell: pwsh
+        run: ./scripts/make-fixtures.ps1 -DisableTrimWhileBuilding
+      - name: Scenario tests
+        env:
+          UNLOST_REQUIRE_FIXTURES: "1"
+        run: cargo test -p unlost-core --locked --test vhdx_scenarios -- --nocapture
+      - name: Elevated tests
+        env:
+          UNLOST_SCAN_DEVICE: 'D:\'
+        run: cargo test -p unlost-core --locked --test elevated -- --ignored --nocapture
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Run each target briefly
+        working-directory: fuzz
+        run: |
+          for t in ntfs_volume file_record runlist recycle_info vhdx_image partitions; do
+            cargo +nightly fuzz run "$t" -- -max_total_time=60
+          done

@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: cargo test --workspace --locked
+
+      - name: Build installers
+        run: pnpm tauri build --bundles nsis,msi
+
+      - name: Package portable zip and checksums
+        shell: pwsh
+        run: ./scripts/package-portable.ps1
+
+      - name: Create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          # Release notes are the CHANGELOG section for this version.
+          $log = Get-Content CHANGELOG.md -Raw
+          $m = [regex]::Match($log, "(?ms)^## \[$([regex]::Escape($version))\][^\n]*\n(.*?)(?=^## \[|\z)")
+          $notes = if ($m.Success) { $m.Groups[1].Value.Trim() } else { "See CHANGELOG.md." }
+          $notes += "`n`n### Verify your download`nSHA-256 checksums are in SHA256SUMS.txt. Builds are not code-signed yet; see the README. Prefer the portable zip, started from a different disk than the one you recover from."
+          Set-Content -Path release-notes.md -Value $notes -Encoding utf8
+          gh release create $tag --draft --title "Unlost $version" --notes-file release-notes.md (Get-ChildItem release -File | ForEach-Object FullName)

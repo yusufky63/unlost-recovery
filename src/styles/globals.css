@@ -1,0 +1,404 @@
+/* Unlost design tokens: the house style shared with ReClaim Cleaner (Tailwind v4). One brand
+   colour (teal, so the two apps are told apart at a glance) and three status colours. */
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --font-body: "DM Sans Variable";
+  --font-display: "Space Grotesk Variable";
+  --font-mono: "JetBrains Mono Variable";
+
+  --bg: #ffffff;
+  --surface: #f8f9fb;
+  --surface-muted: #eef0f3;
+  --border: #dee1e7;
+  --border-strong: #8f96a3;
+
+  --text: #0a0b0d;
+  --text-secondary: #5b616e;
+  --text-muted: #687080;
+
+  /* ---- BRAND ---- */
+  --primary: #0b7285;
+  --primary-strong: #095c6b;
+  --primary-fill: #0b7285;
+  --primary-contrast: #ffffff;
+  --primary-soft: rgba(11, 114, 133, 0.08);
+  /* --------------- */
+
+  --positive: #3f9b0b;
+  --positive-fg: #2f7d00;
+  --positive-soft: rgba(102, 200, 0, 0.14);
+  --danger: #fc401f;
+  --danger-fg: #c62a0f;
+  --danger-soft: rgba(252, 64, 31, 0.1);
+  --warning: #f5a623;
+  --warning-fg: #8a5a00;
+  --warning-soft: rgba(245, 166, 35, 0.14);
+
+
+  --grid: rgba(10, 11, 13, 0.045);
+  --ink-soft: rgba(10, 11, 13, 0.06);
+  --scrim: rgba(10, 11, 13, 0.5);
+  --shadow-popover: 0 8px 24px rgba(10, 11, 13, 0.12);
+  --shadow-overlay: 0 24px 64px rgba(10, 11, 13, 0.24);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 240ms;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0a0b0d;
+  --surface: #111318;
+  --surface-muted: #17191f;
+  --border: #2b2e36;
+  --border-strong: #5b616e;
+  --text: #ffffff;
+  --text-secondary: #b1b7c3;
+  --text-muted: #8a90a0;
+  --primary: #3cc3d3;
+  --primary-strong: #6fd5e1;
+  --primary-fill: #0b7f90;
+  --primary-soft: rgba(60, 195, 211, 0.14);
+  --positive: #66c800;
+  --positive-fg: #7ddc1a;
+  --positive-soft: rgba(125, 220, 26, 0.16);
+  --danger-fg: #ff6a4d;
+  --danger-soft: rgba(255, 106, 77, 0.14);
+  --warning-fg: #ffc857;
+  --warning-soft: rgba(255, 200, 87, 0.14);
+  --grid: rgba(255, 255, 255, 0.045);
+  --ink-soft: rgba(255, 255, 255, 0.07);
+  --scrim: rgba(0, 0, 0, 0.6);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-overlay: 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0a0b0d;
+    --surface: #111318;
+    --surface-muted: #17191f;
+    --border: #2b2e36;
+    --border-strong: #5b616e;
+    --text: #ffffff;
+    --text-secondary: #b1b7c3;
+    --text-muted: #8a90a0;
+    --primary: #3cc3d3;
+    --primary-strong: #6fd5e1;
+    --primary-fill: #0b7f90;
+    --primary-soft: rgba(60, 195, 211, 0.14);
+    --positive: #66c800;
+    --positive-fg: #7ddc1a;
+    --positive-soft: rgba(125, 220, 26, 0.16);
+    --danger-fg: #ff6a4d;
+    --danger-soft: rgba(255, 106, 77, 0.14);
+    --warning-fg: #ffc857;
+    --warning-soft: rgba(255, 200, 87, 0.14);
+    --grid: rgba(255, 255, 255, 0.045);
+    --ink-soft: rgba(255, 255, 255, 0.07);
+    --scrim: rgba(0, 0, 0, 0.6);
+    --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --shadow-overlay: 0 24px 64px rgba(0, 0, 0, 0.6);
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-ink-secondary: var(--text-secondary);
+  --color-ink-muted: var(--text-muted);
+  --color-primary: var(--primary);
+  --color-primary-strong: var(--primary-strong);
+  --color-primary-fill: var(--primary-fill);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-contrast: var(--primary-contrast);
+  --color-positive: var(--positive);
+  --color-positive-fg: var(--positive-fg);
+  --color-positive-soft: var(--positive-soft);
+  --color-danger: var(--danger);
+  --color-danger-fg: var(--danger-fg);
+  --color-danger-soft: var(--danger-soft);
+  --color-warning: var(--warning);
+  --color-warning-fg: var(--warning-fg);
+  --color-warning-soft: var(--warning-soft);
+  --color-scrim: var(--scrim);
+
+  --font-sans: var(--font-body), "DM Sans", system-ui, sans-serif;
+  --font-display: var(--font-display), "Space Grotesk", system-ui, sans-serif;
+  --font-mono: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --shadow-popover: var(--shadow-popover);
+  --shadow-overlay: var(--shadow-overlay);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+body {
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--font-body), "DM Sans", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection {
+  background: var(--primary-fill);
+  color: var(--primary-contrast);
+}
+/* A desktop app: chrome text is not selectable, content opts back in with .selectable. */
+.app-shell {
+  user-select: none;
+}
+.selectable,
+input,
+textarea {
+  user-select: text;
+}
+
+/* ---------- Typography ---------- */
+.num,
+.font-mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+.display {
+  font-family: var(--font-display), "Space Grotesk", system-ui, sans-serif;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+}
+.display-medium {
+  font-family: var(--font-display), "Space Grotesk", system-ui, sans-serif;
+  letter-spacing: -0.02em;
+  font-weight: 500;
+}
+.label {
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.eyebrow::before {
+  content: "";
+  width: 14px;
+  height: 2px;
+  background: var(--primary);
+  flex: none;
+}
+
+/* ---------- Modules ---------- */
+.module-grid {
+  display: grid;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.module-grid > * {
+  background: var(--bg);
+  min-width: 0;
+}
+.ticks {
+  position: relative;
+}
+.ticks::before,
+.ticks::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 0 solid var(--primary);
+  pointer-events: none;
+  z-index: 10;
+}
+.ticks::before {
+  top: -1px;
+  left: -1px;
+  border-top-width: 2px;
+  border-left-width: 2px;
+  border-top-left-radius: var(--radius-md);
+}
+.ticks::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  border-bottom-right-radius: var(--radius-md);
+}
+.rail {
+  position: relative;
+  transition: background-color var(--dur-fast) var(--ease);
+}
+.rail::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--primary);
+  transform: scaleY(0);
+  transition: transform var(--dur-base) var(--ease);
+}
+.rail:hover::before,
+.rail:focus-visible::before,
+.rail-active::before {
+  transform: scaleY(1);
+}
+
+/* ---------- Data ---------- */
+.swatch-free {
+  background: var(--surface-muted);
+}
+
+/* ---------- Focus ---------- */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+}
+
+/* ---------- Motion ---------- */
+@keyframes rise {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.anim-rise {
+  animation: rise var(--dur-slow) var(--ease);
+}
+.anim-fade {
+  animation: fade var(--dur-base) var(--ease);
+}
+.reveal > * {
+  animation: rise var(--dur-slow) var(--ease) both;
+}
+.reveal > *:nth-child(2) {
+  animation-delay: 50ms;
+}
+.reveal > *:nth-child(3) {
+  animation-delay: 100ms;
+}
+.reveal > *:nth-child(4) {
+  animation-delay: 150ms;
+}
+.bar-indeterminate {
+  animation: indeterminate 1.2s var(--ease) infinite;
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------- Scrollbar ---------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* ---------- Layers (fixed scale) ---------- */
+.z-raised { z-index: 10; }
+.z-sticky { z-index: 20; }
+.z-header { z-index: 40; }
+.z-popover { z-index: 50; }
+.z-drawer { z-index: 90; }
+.z-dialog { z-index: 100; }
+.z-toast { z-index: 1200; }
+
+/* ---------- Controls ---------- */
+.btn-primary {
+  background: var(--primary-fill);
+  color: var(--primary-contrast);
+}
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary-fill) 86%, var(--text));
+}
+.field {
+  height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text);
+  padding: 0 12px;
+  font-size: 14px;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.field:focus-within,
+.field:focus {
+  border-color: var(--primary);
+  outline: none;
+}

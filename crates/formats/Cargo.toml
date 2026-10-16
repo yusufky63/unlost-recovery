@@ -1,0 +1,20 @@
+[package]
+name = "unlost-formats"
+description = "Read-only, unsafe-free parsers for Unlost: NTFS, Recycle Bin $I files, VHDX images and partition tables"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[features]
+# Exposes the synthetic NTFS/VHDX/GPT image builders to other crates' tests and fuzz seeds.
+test-util = []
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive", "rc"] }
+thiserror = "=2.0.21"
+
+[dev-dependencies]
+sha2 = "=0.10.9"

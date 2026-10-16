@@ -1,0 +1,57 @@
+[package]
+name = "unlost-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+unlost-formats = { path = "../crates/formats" }
+
+[workspace]
+
+[[bin]]
+name = "ntfs_volume"
+path = "fuzz_targets/ntfs_volume.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_record"
+path = "fuzz_targets/file_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "runlist"
+path = "fuzz_targets/runlist.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recycle_info"
+path = "fuzz_targets/recycle_info.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vhdx_image"
+path = "fuzz_targets/vhdx_image.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "partitions"
+path = "fuzz_targets/partitions.rs"
+test = false
+doc = false
+bench = false
