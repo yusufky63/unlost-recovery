@@ -32,6 +32,10 @@ pub enum Request {
     Hello,
     Scan {
         source: SourceSpec,
+        /// Folder for the session database, already approved by [`crate::workspace::approve`].
+        /// The broker ignores it: it writes nothing and streams its findings instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
     },
     Query {
         scan: u32,
@@ -40,6 +44,10 @@ pub enum Request {
     Read {
         scan: u32,
         record: u64,
+        /// For broker scans: the location the broker streamed for this record, handed back
+        /// because the broker keeps nothing per file. Filled in by the engine.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sealed: Option<Sealed>,
     },
     /// Rows for specific records (the selection being recovered).
     Entries {
@@ -85,6 +93,41 @@ pub struct Query {
     pub desc: bool,
     pub offset: u32,
     pub limit: u32,
+}
+
+/// A content location the broker produced, on its way back to the broker for reading. `tag`
+/// authenticates `location` with a key only the broker holds, so a read request can name only
+/// clusters the broker itself found for that record. `assessment` is the scan's grade; it
+/// steers the refusal and the grade after reading, never what is read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sealed {
+    /// Hex of [`unlost_formats::ntfs::location::encode`].
+    pub location: String,
+    pub tag: String,
+    pub assessment: Assessment,
+}
+
+pub fn hex(b: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(b.len() * 2);
+    for &x in b {
+        s.push(DIGITS[usize::from(x >> 4)] as char);
+        s.push(DIGITS[usize::from(x & 15)] as char);
+    }
+    s
+}
+
+pub fn unhex(s: &str) -> Option<Vec<u8>> {
+    let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let (pairs, rest) = s.as_bytes().as_chunks::<2>();
+    if !rest.is_empty() {
+        return None;
+    }
+    pairs
+        .iter()
+        .map(|p| Some(digit(p[0])? << 4 | digit(p[1])?))
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +251,7 @@ mod tests {
             req: Request::Read {
                 scan: 1,
                 record: 42,
+                sealed: None,
             },
         })
         .unwrap();
@@ -224,7 +268,8 @@ mod tests {
             env.req,
             Request::Read {
                 scan: 1,
-                record: 42
+                record: 42,
+                sealed: None,
             }
         );
         assert_eq!(read_frame(&mut r).unwrap(), None);
@@ -244,6 +289,7 @@ mod tests {
             source: SourceSpec::Volume {
                 root: "D:\\".into(),
             },
+            workspace: None,
         })
         .unwrap();
         assert_eq!(
@@ -253,5 +299,24 @@ mod tests {
         let q: Query = serde_json::from_str(r#"{"text":"x","states":["likelyIntact"]}"#).unwrap();
         assert_eq!(q.states, vec![State::LikelyIntact]);
         assert_eq!(q.limit, 0);
+        let r: Request = serde_json::from_str(r#"{"op":"read","scan":3,"record":9}"#).unwrap();
+        assert_eq!(
+            r,
+            Request::Read {
+                scan: 3,
+                record: 9,
+                sealed: None
+            }
+        );
+    }
+
+    #[test]
+    fn hex_round_trips() {
+        let b: Vec<u8> = (0..=255).collect();
+        assert_eq!(unhex(&hex(&b)).unwrap(), b);
+        assert_eq!(hex(&[0xAB, 0x01]), "ab01");
+        assert!(unhex("abc").is_none());
+        assert!(unhex("zz").is_none());
+        assert_eq!(unhex("").unwrap(), Vec::<u8>::new());
     }
 }

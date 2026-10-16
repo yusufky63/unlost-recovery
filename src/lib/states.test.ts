@@ -22,6 +22,7 @@ describe("states", () => {
       [{ code: "headerMismatch", expected: "a JPEG image" }, { ext: "jpg" }],
       [{ code: "shadowCopy", created: 5 }, { date: "d5" }],
       [{ code: "unreadable", bytes: 2048 }, { bytes: "2.0 KB" }],
+      [{ code: "tooFragmented", runs: 200000 }, { runs: 200000 }],
       [{ code: "encrypted" }, {}],
     ];
     for (const [r, want] of cases) expect(reasonParams(r, ctx)).toEqual(want);

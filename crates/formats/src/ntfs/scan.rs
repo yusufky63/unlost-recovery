@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::magic;
 use crate::ntfs::ROOT_RECORD;
+use crate::ntfs::location;
 use crate::ntfs::record::{
     ATTR_ATTRIBUTE_LIST, ATTR_DATA, ATTR_FILE_NAME, ATTR_FLAG_COMPRESSION_MASK,
     ATTR_FLAG_ENCRYPTED, ATTR_REPARSE_POINT, ATTR_STANDARD_INFORMATION, Body,
@@ -26,10 +26,16 @@ const MAX_DEPTH: usize = 1024;
 pub const MAX_SIZE_FACTOR: u64 = 16;
 /// Bytes sampled from each sampled cluster.
 const SAMPLE_BYTES: usize = 4096;
+/// Deleted files with an attribute list wait for their extension records until the `$MFT`
+/// pass ends; these bound what they and the extension records may hold meanwhile. Beyond
+/// them a file is graded with what its own record has.
+const MAX_HELD: usize = 65_536;
+const MAX_HELD_BYTES: usize = 64 << 20;
 
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
-    /// Deleted files kept; the scan reports `truncated` beyond this.
+    /// Deleted files reported; the scan sets `truncated` beyond this. Files stream out as
+    /// they are found, so the default is no limit.
     pub max_files: usize,
     /// Cluster reads spent on content sampling.
     pub max_samples: usize,
@@ -38,8 +44,7 @@ pub struct ScanOptions {
 impl Default for ScanOptions {
     fn default() -> Self {
         ScanOptions {
-            // About 500 bytes each in memory; a busy system volume can hold millions.
-            max_files: 1_000_000,
+            max_files: usize::MAX,
             max_samples: 300_000,
         }
     }
@@ -72,15 +77,14 @@ pub struct NonResidentData {
     pub compressed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct DeletedFile {
     pub record: u64,
     pub sequence: u16,
     pub name: String,
-    /// Folder path inside the volume, starting with `\`. Shared between files of one folder.
-    pub folder: Arc<str>,
-    pub path_status: PathStatus,
+    /// The parent folder's NTFS reference ([`FileRef::to_u64`]). Its path arrives separately,
+    /// through [`ScanSink::folder`] with this key, once the whole `$MFT` has been read.
+    pub folder: u64,
     /// Number of names (hard links) the record had.
     pub links: u16,
     pub size: u64,
@@ -92,19 +96,10 @@ pub struct DeletedFile {
     /// Named data streams (alternate data streams) left in the record.
     pub streams: u32,
     pub assessment: Assessment,
-    #[serde(skip)]
     pub data: DataLocation,
 }
 
 impl DeletedFile {
-    pub fn path(&self) -> String {
-        if &*self.folder == "\\" {
-            format!("\\{}", self.name)
-        } else {
-            format!("{}\\{}", self.folder, self.name)
-        }
-    }
-
     /// First cluster of the content, for sorting reads.
     pub fn first_lcn(&self) -> Option<u64> {
         match &self.data {
@@ -127,10 +122,85 @@ pub struct ScanStats {
     pub bitmap_ok: bool,
 }
 
+/// Where the scan's findings go, as they are found. Nothing about a file is kept once it has
+/// been handed over, so a scan's memory does not grow with the number of deleted files.
+pub trait ScanSink {
+    /// A deleted file, graded against `$Bitmap`.
+    fn file(&mut self, f: DeletedFile) -> Result<()>;
+    /// The path of a folder that files were reported in, keyed by [`DeletedFile::folder`].
+    /// Sent once per key, after all files.
+    fn folder(&mut self, key: u64, path: &str, status: PathStatus) -> Result<()>;
+    /// A new grade for a file already reported, after its content was sampled.
+    fn regrade(&mut self, record: u64, assessment: &Assessment) -> Result<()>;
+}
+
+#[derive(Debug, Clone)]
+pub struct Folder {
+    pub path: String,
+    pub status: PathStatus,
+}
+
+/// Everything a scan found, in memory: for tests, fuzzing and tools. The app streams instead.
+#[derive(Default)]
 pub struct ScanResult {
     pub label: String,
     pub files: Vec<DeletedFile>,
+    pub folders: HashMap<u64, Folder>,
     pub stats: ScanStats,
+    index: HashMap<u64, usize>,
+}
+
+impl ScanResult {
+    /// Full path inside the volume, starting with `\`.
+    pub fn path(&self, f: &DeletedFile) -> String {
+        match self.folders.get(&f.folder) {
+            Some(d) if d.path == "\\" => format!("\\{}", f.name),
+            Some(d) => format!("{}\\{}", d.path, f.name),
+            None => format!("\\{}", f.name),
+        }
+    }
+
+    pub fn status(&self, f: &DeletedFile) -> Option<PathStatus> {
+        self.folders.get(&f.folder).map(|d| d.status)
+    }
+}
+
+impl ScanSink for ScanResult {
+    fn file(&mut self, f: DeletedFile) -> Result<()> {
+        self.index.insert(f.record, self.files.len());
+        self.files.push(f);
+        Ok(())
+    }
+    fn folder(&mut self, key: u64, path: &str, status: PathStatus) -> Result<()> {
+        self.folders.insert(
+            key,
+            Folder {
+                path: path.to_string(),
+                status,
+            },
+        );
+        Ok(())
+    }
+    fn regrade(&mut self, record: u64, assessment: &Assessment) -> Result<()> {
+        if let Some(&i) = self.index.get(&record) {
+            self.files[i].assessment = assessment.clone();
+        }
+        Ok(())
+    }
+}
+
+/// [`scan`] into memory.
+pub fn scan_all<S: SectorSource>(
+    vol: &NtfsVolume<S>,
+    opts: &ScanOptions,
+    progress: &dyn Progress,
+) -> Result<ScanResult> {
+    let mut res = ScanResult {
+        label: vol.label(),
+        ..ScanResult::default()
+    };
+    res.stats = scan(vol, opts, progress, &mut res)?;
+    Ok(res)
 }
 
 struct Dir {
@@ -159,21 +229,48 @@ struct Extension {
     pieces: Vec<Piece>,
 }
 
-/// Lists deleted files on the volume and grades each one.
+/// Rough heap bytes of names and pieces, for the [`MAX_HELD_BYTES`] budget.
+fn held_cost(names: &[FileName], pieces: &[Piece]) -> usize {
+    let n: usize = names.iter().map(|n| n.name.len() + 64).sum();
+    let p: usize = pieces
+        .iter()
+        .map(|p| p.runs.len() * size_of::<Run>() + p.resident.as_ref().map_or(0, Vec::len) + 64)
+        .sum();
+    n + p
+}
+
+/// Lists deleted files on the volume, grades each one, and streams them to `sink`.
+///
+/// Order: files as the `$MFT` is read (those with an attribute list at the end, once their
+/// extension records are known), then regrades from content sampling, then folder paths.
 pub fn scan<S: SectorSource>(
     vol: &NtfsVolume<S>,
     opts: &ScanOptions,
     progress: &dyn Progress,
-) -> Result<ScanResult> {
+    sink: &mut dyn ScanSink,
+) -> Result<ScanStats> {
     let rs = vol.boot.record_size as usize;
     let total_clusters = vol.boot.total_clusters;
     let mut stats = ScanStats {
         records: vol.record_count,
         ..ScanStats::default()
     };
+    // Files are graded as they stream out, so `$Bitmap` is read first.
+    let bitmap = vol.bitmap();
+    stats.bitmap_ok = bitmap.is_ok();
+    let mut out = Emitter {
+        sink,
+        bitmap: bitmap.as_ref().ok(),
+        cluster: vol.cluster_size(),
+        volume_bytes: vol.volume_bytes(),
+        parents: HashSet::new(),
+        sampler: Sampler::new(opts.max_samples),
+        emitted: 0,
+    };
     let mut dirs: HashMap<u64, Dir> = HashMap::new();
-    let mut cands: Vec<Candidate> = Vec::new();
+    let mut held: Vec<Candidate> = Vec::new();
     let mut exts: Vec<Extension> = Vec::new();
+    let mut held_bytes = 0usize;
 
     progress.stage("mft");
     progress.set_total(vol.record_count);
@@ -221,7 +318,11 @@ pub fn scan<S: SectorSource>(
             if h.base.record != 0 {
                 if clean {
                     let (names, pieces) = names_and_data(rec, &h, total_clusters);
-                    if !names.is_empty() || !pieces.is_empty() {
+                    let cost = held_cost(&names, &pieces);
+                    let room =
+                        held.len() + exts.len() < MAX_HELD && held_bytes + cost <= MAX_HELD_BYTES;
+                    if room && (!names.is_empty() || !pieces.is_empty()) {
+                        held_bytes += cost;
                         exts.push(Extension {
                             base: h.base,
                             names,
@@ -285,35 +386,63 @@ pub fn scan<S: SectorSource>(
             if c.torn {
                 stats.torn += 1;
             }
-            if cands.len() >= opts.max_files {
+            if out.emitted + held.len() >= opts.max_files {
                 stats.truncated = true;
                 continue;
             }
             progress.found(1);
-            cands.push(c);
+            if c.has_list {
+                let cost = held_cost(&c.names, &c.pieces);
+                if held.len() + exts.len() < MAX_HELD && held_bytes + cost <= MAX_HELD_BYTES {
+                    held_bytes += cost;
+                    held.push(c);
+                    continue;
+                }
+            }
+            out.file(c)?;
         }
         first += n;
         progress.advance(n);
     }
 
-    merge_extensions(&mut cands, exts);
+    merge_extensions(&mut held, exts);
+    for c in held {
+        out.file(c)?;
+    }
+
+    progress.stage("sample");
+    stats.sampled = out.sampler.run(vol, progress, out.sink)?;
 
     progress.stage("paths");
-    let bitmap = vol.bitmap();
-    stats.bitmap_ok = bitmap.is_ok();
-    let mut memo: HashMap<FileRef, (Arc<str>, PathStatus)> = HashMap::new();
-    let mut files: Vec<DeletedFile> = Vec::with_capacity(cands.len());
-    for c in cands {
+    progress.set_total(out.parents.len() as u64);
+    for (i, key) in out.parents.iter().enumerate() {
+        if i % 4096 == 0 && progress.cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let (path, status) = folder_path(FileRef::from_u64(*key), &dirs);
+        out.sink.folder(*key, &path, status)?;
+        progress.advance(1);
+    }
+    Ok(stats)
+}
+
+/// Grades candidates and hands them to the sink, remembering only which folders they
+/// reference and which clusters to sample.
+struct Emitter<'a> {
+    sink: &'a mut dyn ScanSink,
+    bitmap: Option<&'a Bitmap>,
+    cluster: u64,
+    volume_bytes: u64,
+    parents: HashSet<u64>,
+    sampler: Sampler,
+    emitted: usize,
+}
+
+impl Emitter<'_> {
+    fn file(&mut self, c: Candidate) -> Result<()> {
         let Some(best) = pick_name(&c.names).cloned() else {
-            continue;
+            return Ok(());
         };
-        let (folder, path_status) = memo
-            .entry(best.parent)
-            .or_insert_with(|| {
-                let (p, s) = folder_path(best.parent, &dirs);
-                (Arc::from(p), s)
-            })
-            .clone();
         let links = c
             .names
             .iter()
@@ -322,7 +451,7 @@ pub fn scan<S: SectorSource>(
             .collect::<HashSet<_>>()
             .len()
             .max(1) as u16;
-        let (data, has_unnamed) = data_location(&c.pieces);
+        let (data, has_unnamed, cut) = data_location(&c.pieces);
         let size = match &data {
             DataLocation::Resident(v) => v.len() as u64,
             DataLocation::NonResident(nr) => nr.real,
@@ -342,17 +471,22 @@ pub fn scan<S: SectorSource>(
             &c,
             &data,
             has_unnamed,
+            cut,
             attributes,
-            bitmap.as_ref().ok(),
-            vol.cluster_size(),
-            vol.volume_bytes(),
+            self.bitmap,
+            self.cluster,
+            self.volume_bytes,
         );
-        files.push(DeletedFile {
+        let folder = best.parent.to_u64();
+        self.parents.insert(folder);
+        self.sampler
+            .offer(c.record, &best.name, &assessment, &data, self.cluster);
+        self.emitted += 1;
+        self.sink.file(DeletedFile {
             record: c.record,
             sequence: c.sequence,
             name: best.name,
             folder,
-            path_status,
             links,
             size,
             created: filetime::to_unix(times.0),
@@ -363,16 +497,8 @@ pub fn scan<S: SectorSource>(
             streams: c.streams,
             assessment,
             data,
-        });
+        })
     }
-
-    progress.stage("sample");
-    stats.sampled = sample(vol, &mut files, opts.max_samples, progress)?;
-    Ok(ScanResult {
-        label: vol.label(),
-        files,
-        stats,
-    })
 }
 
 fn best_name(rec: &[u8], h: &crate::ntfs::record::Header) -> Option<FileName> {
@@ -430,24 +556,27 @@ fn merge_extensions(cands: &mut [Candidate], exts: Vec<Extension>) {
     }
 }
 
-fn data_location(pieces: &[Piece]) -> (DataLocation, bool) {
+/// (location, has unnamed data, original run count when the map had to be cut).
+fn data_location(pieces: &[Piece]) -> (DataLocation, bool, Option<u64>) {
     if pieces.is_empty() {
-        return (DataLocation::Missing, false);
+        return (DataLocation::Missing, false, None);
     }
     if let Some(p) = pieces.iter().find(|p| p.resident.is_some()) {
         return (
             DataLocation::Resident(p.resident.clone().unwrap_or_default()),
             true,
+            None,
         );
     }
     let Some(first) = pieces.iter().find(|p| p.start_vcn == 0) else {
-        return (DataLocation::Missing, true);
+        return (DataLocation::Missing, true, None);
     };
     let mut sorted: Vec<&Piece> = pieces.iter().filter(|p| p.runs_ok).collect();
     sorted.sort_by_key(|p| p.start_vcn);
     let mut runs: Vec<Run> = sorted.iter().flat_map(|p| p.runs.iter().copied()).collect();
     runs.sort_by_key(|r| r.vcn);
     runs.dedup_by_key(|r| r.vcn);
+    let cut = location::fit(&mut runs);
     (
         DataLocation::NonResident(NonResidentData {
             runs,
@@ -458,6 +587,7 @@ fn data_location(pieces: &[Piece]) -> (DataLocation, bool) {
                 .any(|p| p.flags & ATTR_FLAG_COMPRESSION_MASK != 0),
         }),
         true,
+        cut,
     )
 }
 
@@ -511,10 +641,12 @@ fn folder_path(parent: FileRef, dirs: &HashMap<u64, Dir>) -> (String, PathStatus
     (p, status)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assess(
     c: &Candidate,
     data: &DataLocation,
     has_unnamed: bool,
+    cut: Option<u64>,
     attributes: u32,
     bitmap: Option<&Bitmap>,
     cluster: u64,
@@ -562,6 +694,9 @@ fn assess(
             }
             if nr.real > volume_bytes.saturating_mul(MAX_SIZE_FACTOR) {
                 return Assessment::new(S::MetadataOnly, R::SizeImplausible);
+            }
+            if let Some(runs) = cut {
+                return Assessment::new(S::Partial, R::TooFragmented { runs });
             }
             let needed = nr.real.div_ceil(cluster.max(1));
             let (mapped, covered) = mapped_clusters(&nr.runs, needed);
@@ -639,24 +774,44 @@ fn reused_clusters(bm: &Bitmap, runs: &[Run], needed: u64) -> u64 {
         .sum()
 }
 
-/// Reads the first, middle and last cluster of every file whose clusters are all free, in disk
-/// order, to catch SSD-erased (all-zero) content and overwritten headers.
-fn sample<S: SectorSource>(
-    vol: &NtfsVolume<S>,
-    files: &mut [DeletedFile],
+/// Content sampling: the first, middle and last cluster of every file whose clusters are all
+/// free, read in disk order after the `$MFT` pass, to catch SSD-erased (all-zero) content and
+/// overwritten headers. Files are taken in the order they stream out until the budget is
+/// spent; only their picks and a few counters are kept.
+struct Sampler {
     budget: usize,
-    progress: &dyn Progress,
-) -> Result<u64> {
-    let cs = vol.cluster_size();
-    let mut plan: Vec<(u64, usize, bool)> = Vec::new();
-    for (i, f) in files.iter().enumerate() {
-        if !matches!(f.assessment.reason, Reason::ClustersFreeUnsampled { .. }) {
-            continue;
+    /// (cluster, index into `files`, is the file's first cluster).
+    plan: Vec<(u64, u32, bool)>,
+    files: Vec<Sampled>,
+}
+
+struct Sampled {
+    record: u64,
+    clusters: u64,
+    ext: String,
+    read: u32,
+    zero: u32,
+    /// Whether the first cluster starts like the extension promises, when known.
+    header: Option<bool>,
+}
+
+impl Sampler {
+    fn new(budget: usize) -> Self {
+        Sampler {
+            budget,
+            plan: Vec::new(),
+            files: Vec::new(),
         }
-        let DataLocation::NonResident(nr) = &f.data else {
-            continue;
+    }
+
+    fn offer(&mut self, record: u64, name: &str, a: &Assessment, data: &DataLocation, cs: u64) {
+        let Reason::ClustersFreeUnsampled { clusters } = a.reason else {
+            return;
         };
-        let needed = nr.real.div_ceil(cs);
+        let DataLocation::NonResident(nr) = data else {
+            return;
+        };
+        let needed = nr.real.div_ceil(cs.max(1));
         let mapped: Vec<(u64, u64)> = nr
             .runs
             .iter()
@@ -664,9 +819,12 @@ fn sample<S: SectorSource>(
             .filter_map(|r| r.lcn.map(|l| (l, r.len.min(needed - r.vcn))))
             .collect();
         let total: u64 = mapped.iter().map(|m| m.1).sum();
-        if total == 0 || plan.len() + 3 > budget {
-            continue;
+        if total == 0 || self.plan.len() + 3 > self.budget {
+            return;
         }
+        let Ok(idx) = u32::try_from(self.files.len()) else {
+            return;
+        };
         let first_is_vcn0 = nr
             .runs
             .first()
@@ -677,63 +835,74 @@ fn sample<S: SectorSource>(
             let mut left = pick;
             for (lcn, len) in &mapped {
                 if left < *len {
-                    plan.push((lcn + left, i, k == 0 && first_is_vcn0));
+                    self.plan.push((lcn + left, idx, k == 0 && first_is_vcn0));
                     break;
                 }
                 left -= len;
             }
         }
+        self.files.push(Sampled {
+            record,
+            clusters,
+            ext: magic::extension(name),
+            read: 0,
+            zero: 0,
+            header: None,
+        });
     }
-    plan.sort_unstable_by_key(|p| p.0);
-    progress.set_total(plan.len() as u64);
-    let mut sampled = vec![0u32; files.len()];
-    let mut zero = vec![0u32; files.len()];
-    let mut heads: HashMap<usize, Vec<u8>> = HashMap::new();
-    let mut buf = vec![0u8; SAMPLE_BYTES.min(cs as usize)];
-    for (lcn, i, is_head) in &plan {
-        if progress.cancelled() {
-            return Err(Error::Cancelled);
+
+    /// Reads the planned clusters and sends the new grades. Returns the number of reads.
+    fn run<S: SectorSource>(
+        &mut self,
+        vol: &NtfsVolume<S>,
+        progress: &dyn Progress,
+        sink: &mut dyn ScanSink,
+    ) -> Result<u64> {
+        let cs = vol.cluster_size();
+        self.plan.sort_unstable_by_key(|p| p.0);
+        progress.set_total(self.plan.len() as u64);
+        let mut buf = vec![0u8; SAMPLE_BYTES.min(cs as usize)];
+        for &(lcn, i, is_head) in &self.plan {
+            if progress.cancelled() {
+                return Err(Error::Cancelled);
+            }
+            progress.advance(1);
+            if vol.source().read_at(lcn * cs, &mut buf).is_err() {
+                continue;
+            }
+            let f = &mut self.files[i as usize];
+            f.read += 1;
+            if buf.iter().all(|&b| b == 0) {
+                f.zero += 1;
+            }
+            if is_head {
+                f.header = magic::header_matches(&f.ext, &buf[..buf.len().min(1024)]);
+            }
         }
-        progress.advance(1);
-        if vol.source().read_at(lcn * cs, &mut buf).is_err() {
-            continue;
-        }
-        sampled[*i] += 1;
-        if buf.iter().all(|&b| b == 0) {
-            zero[*i] += 1;
-        }
-        if *is_head {
-            heads.insert(*i, buf[..buf.len().min(1024)].to_vec());
-        }
-    }
-    for (i, f) in files.iter_mut().enumerate() {
-        let Reason::ClustersFreeUnsampled { clusters } = f.assessment.reason else {
-            continue;
-        };
-        let n = sampled[i];
-        if n == 0 {
-            continue;
-        }
-        f.assessment = if zero[i] == n {
-            Assessment::new(State::Zeroed, Reason::AllZero { sampled: n })
-        } else {
-            let ext = magic::extension(&f.name);
-            match heads.get(&i).and_then(|h| magic::header_matches(&ext, h)) {
-                Some(false) => Assessment::new(
+        for f in &self.files {
+            if f.read == 0 {
+                continue;
+            }
+            let a = if f.zero == f.read {
+                Assessment::new(State::Zeroed, Reason::AllZero { sampled: f.read })
+            } else if f.header == Some(false) {
+                Assessment::new(
                     State::Partial,
                     Reason::HeaderMismatch {
-                        expected: magic::type_name(&ext).unwrap_or("its type").into(),
+                        expected: magic::type_name(&f.ext).unwrap_or("its type").into(),
                     },
-                ),
-                _ => Assessment::new(
+                )
+            } else {
+                Assessment::new(
                     State::LikelyIntact,
                     Reason::ClustersFree {
-                        clusters,
-                        sampled: n,
+                        clusters: f.clusters,
+                        sampled: f.read,
                     },
-                ),
-            }
-        };
+                )
+            };
+            sink.regrade(f.record, &a)?;
+        }
+        Ok(self.plan.len() as u64)
     }
-    Ok(plan.len() as u64)
 }

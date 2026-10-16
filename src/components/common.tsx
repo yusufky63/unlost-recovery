@@ -81,8 +81,9 @@ export function AdminGate({ why, children }: { why: string; children: ReactNode 
   );
 }
 
-/** Folder picker that shows the destination guard's verdict for `source`. */
-export function DestinationPicker({ source, onReady }: { source: GuardSource; onReady: (dest: string | null, confirmUnknown: boolean) => void }) {
+/** Folder picker that shows the destination guard's verdict for `source`. The texts default to
+ *  the recovery destination's; the scan-data folder passes its own. */
+export function DestinationPicker({ source, onReady, title, hint, footnote }: { source: GuardSource; onReady: (dest: string | null, confirmUnknown: boolean) => void; title?: string; hint?: string; footnote?: string }) {
   const { t } = useTranslation();
   const dest = useApp((s) => s.destination);
   const setDestination = useApp((s) => s.setDestination);
@@ -125,8 +126,8 @@ export function DestinationPicker({ source, onReady }: { source: GuardSource; on
   return (
     <div className="space-y-3">
       <div>
-        <div className="text-[14px] font-medium text-ink">{t("dest.title")}</div>
-        <p className="mt-0.5 text-[13px] text-ink-muted">{t("dest.hint")}</p>
+        <div className="text-[14px] font-medium text-ink">{title ?? t("dest.title")}</div>
+        <p className="mt-0.5 text-[13px] text-ink-muted">{hint ?? t("dest.hint")}</p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <div className="selectable flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md border border-line-strong bg-canvas px-3 font-mono text-[13px] text-ink">
@@ -165,7 +166,7 @@ export function DestinationPicker({ source, onReady }: { source: GuardSource; on
           </label>
         </Banner>
       )}
-      <p className="text-[12px] text-ink-muted">{t("dest.folderName")}</p>
+      <p className="text-[12px] text-ink-muted">{footnote ?? t("dest.folderName")}</p>
     </div>
   );
 }

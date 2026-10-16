@@ -18,6 +18,15 @@ pub enum Error {
     /// The destination's physical disk could not be determined and the user did not confirm.
     #[error("cannot tell which physical disk the destination is on: {0}")]
     UnknownDisk(String),
+    /// The scan's session database would land on a physical disk the source uses.
+    #[error("the scan data folder is on the same physical disk as the source ({0})")]
+    WorkspaceSameDisk(String),
+    /// The scan data folder's physical disk could not be determined and the user did not confirm.
+    #[error("cannot tell which physical disk the scan data folder is on: {0}")]
+    WorkspaceUnknown(String),
+    /// The session database failed.
+    #[error("scan database: {0}")]
+    Database(String),
     #[error("administrator rights are required")]
     NeedsAdmin,
     /// The administrator account that approved UAC is not the signed-in user.
@@ -60,6 +69,9 @@ impl Error {
             Error::Format(e) => e.code(),
             Error::SameDisk(_) => "same_disk",
             Error::UnknownDisk(_) => "unknown_disk",
+            Error::WorkspaceSameDisk(_) => "workspace_same_disk",
+            Error::WorkspaceUnknown(_) => "workspace_unknown",
+            Error::Database(_) => "database",
             Error::NeedsAdmin => "needs_admin",
             Error::OtherUser => "other_user",
             Error::Refused(_) => "refused",
@@ -74,6 +86,12 @@ impl Error {
 impl From<windows::core::Error> for Error {
     fn from(e: windows::core::Error) -> Self {
         Error::Windows(e.message())
+    }
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Self {
+        Error::Database(e.to_string())
     }
 }
 
@@ -114,6 +132,9 @@ impl From<ErrorPayload> for Error {
             "other_user" => Error::OtherUser,
             "same_disk" => Error::SameDisk(p.message),
             "unknown_disk" => Error::UnknownDisk(p.message),
+            "workspace_same_disk" => Error::WorkspaceSameDisk(p.message),
+            "workspace_unknown" => Error::WorkspaceUnknown(p.message),
+            "database" => Error::Database(p.message),
             "refused" => Error::Refused(p.message),
             _ => Error::Other(p.message),
         }

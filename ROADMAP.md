@@ -8,13 +8,13 @@ Phases follow [docs/research.md](docs/research.md#6-phased-plan-with-estimates).
 - First screen with per-drive outlook; Recycle Bin recovery; shadow-copy browsing and copy-out.
 - NTFS deleted-file scan with rebuilt paths and evidence-based states; recovery with hashes and reports.
 - VHDX scenario fixtures, elevated tests, fuzz targets.
+- Session store: scan results stream into SQLite on another disk, so busy system drives are scanned in full with bounded memory.
 
 ## Next: Phase 1 completion
 
 - Office, Notepad and VS Code autosave finder; cloud client detection with the right recycle-bin link.
 - MFT scan of shadow devices to find files deleted before the snapshot, with the snapshot's copy marked intact.
 - USN journal evidence for names and deletion times.
-- Session store (SQLite in the workspace) so scans of busy system drives are not capped at one million files.
 - HTML report.
 
 ## Phase 2: cards and sticks

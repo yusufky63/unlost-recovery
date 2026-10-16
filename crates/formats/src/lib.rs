@@ -11,6 +11,7 @@
 pub mod crc32c;
 pub mod error;
 pub mod filetime;
+pub mod findings;
 pub mod fuzzing;
 pub mod guid;
 pub mod magic;

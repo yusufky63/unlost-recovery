@@ -46,9 +46,9 @@ No, never. Creating one writes to the volume being recovered.
 
 No. It makes no network connections. The help links on the "Other places" page open in your browser only when you click them.
 
-## The scan stopped at 1,000,000 files
+## Why does Unlost ask for a folder before scanning my Windows drive?
 
-A busy Windows drive can hold millions of deleted file records, most of them temporary files. This version keeps the first million in memory. Use an image file of a smaller volume, or wait for the planned session store.
+A busy Windows drive can hold millions of deleted file records. Unlost keeps the list in a small database while you browse it, and that database must not be written to the disk you are scanning. Its usual place is the app's data folder (`%LOCALAPPDATA%\Unlost`, or `data` next to the portable exe); when that folder is on the same physical disk as the drive you scan, Unlost asks for a folder on another disk, such as the one you will recover to, and checks it the same way as a recovery destination. It creates `Unlost scan data` there and deletes it when you close the scan or the app. A scan of a 1 TB Windows drive with 3 million deleted files used about 650 MB there.
 
 ## Where is the report?
 

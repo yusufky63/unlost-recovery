@@ -46,6 +46,8 @@ export function reasonParams(r: Reason, ctx: { ext: string; date: (unix: number)
       return { bytes: ctx.bytes(r.bytes) };
     case "someZero":
       return { zero: r.zero, total: r.total };
+    case "tooFragmented":
+      return { runs: r.runs };
     default:
       return {};
   }

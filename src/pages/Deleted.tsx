@@ -1,9 +1,9 @@
 import { FileSearch, FolderX, HardDrive, Image as ImageIcon, Info, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AdminGate, ProgressPanel, RecoverDialog, SelectionBar, StateBadge } from "../components/common";
-import { Badge, Banner, Button, Card, Checkbox, EmptyState, PageHeader, Segmented, Select, Stat } from "../components/ui";
-import { api, pickImage } from "../lib/api";
+import { AdminGate, DestinationPicker, ProgressPanel, RecoverDialog, SelectionBar, StateBadge } from "../components/common";
+import { Badge, Banner, Button, Card, Checkbox, Dialog, EmptyState, PageHeader, Segmented, Select, Stat } from "../components/ui";
+import { ApiError, api, pickImage } from "../lib/api";
 import { cx } from "../lib/cx";
 import { baseName, driveName, formatCount, formatDateTime } from "../lib/format";
 import { useBytes, useLocale, useReasonText } from "../lib/hooks";
@@ -315,6 +315,38 @@ function Results() {
   );
 }
 
+/** Asks for a folder on another disk for the scan's database, when its usual place shares a disk
+ *  with the source. The same guard as for recovered files checks the folder. */
+function WorkspaceDialog({ source, onClose, onStart }: { source: SourceSpec | null; onClose: () => void; onStart: (folder: string, confirmUnknown: boolean) => void }) {
+  const { t } = useTranslation();
+  const [target, setTarget] = useState<{ dest: string | null; confirm: boolean }>({ dest: null, confirm: false });
+  const onReady = useCallback((dest: string | null, confirm: boolean) => setTarget({ dest, confirm }), []);
+  const drive = source?.kind === "volume" ? driveName(source.root) : source?.kind === "image" ? baseName(source.path) : t("deleted.thisSource");
+  return (
+    <Dialog
+      open={!!source}
+      onClose={onClose}
+      wide
+      title={t("workspace.title")}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            {t("common.cancel")}
+          </Button>
+          <Button variant="primary" disabled={!target.dest} onClick={() => target.dest && onStart(target.dest, target.confirm)}>
+            {t("workspace.start")}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-[14px] text-ink-secondary">{t("workspace.body", { drive })}</p>
+        {source && <DestinationPicker source={{ kind: "spec", spec: source }} onReady={onReady} title={t("workspace.folder")} hint={t("workspace.hint")} footnote={t("workspace.footnote")} />}
+      </div>
+    </Dialog>
+  );
+}
+
 export function DeletedPage() {
   const { t } = useTranslation();
   const locale = useLocale();
@@ -322,17 +354,21 @@ export function DeletedPage() {
   const setScan = useApp((s) => s.setScan);
   const toast = useApp((s) => s.toast);
   const [busy, setBusy] = useState(false);
+  const [needsFolder, setNeedsFolder] = useState<SourceSpec | null>(null);
   const stageLabel = (stage: string) => (["mft", "paths", "sample"].includes(stage) ? t(`deleted.stage.${stage}`) : t("common.scanning"));
   const progress = useApp((s) => s.progress.scan);
 
-  const start = async (source: SourceSpec) => {
+  const start = async (source: SourceSpec, workspace?: string, confirmUnknown?: boolean) => {
+    setNeedsFolder(null);
     setBusy(true);
     try {
       if (scan) void api.scanForget(scan.scan).catch(() => {});
       setScan(null);
-      setScan(await api.scanStart(source));
+      setScan(await api.scanStart(source, workspace, confirmUnknown));
     } catch (e) {
-      toast("danger", errorText(e));
+      // The results' usual folder shares a disk with the source: ask for one elsewhere.
+      if (!workspace && e instanceof ApiError && (e.code === "workspace_same_disk" || e.code === "workspace_unknown")) setNeedsFolder(source);
+      else toast("danger", errorText(e));
     } finally {
       setBusy(false);
     }
@@ -342,6 +378,7 @@ export function DeletedPage() {
     <div className="space-y-4">
       <PageHeader title={t("deleted.title")} subtitle={t("deleted.subtitle")} />
       <SourcePicker onScan={(s) => void start(s)} busy={busy} />
+      <WorkspaceDialog source={needsFolder} onClose={() => setNeedsFolder(null)} onStart={(folder, confirm) => needsFolder && void start(needsFolder, folder, confirm)} />
       {busy && (
         <ProgressPanel
           kind="scan"

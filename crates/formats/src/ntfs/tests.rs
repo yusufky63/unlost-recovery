@@ -3,7 +3,8 @@ use sha2::{Digest, Sha256};
 use crate::ntfs::build::{Content, FileSpec, ImageBuilder};
 use crate::ntfs::record::{ATTR_FLAG_COMPRESSION_MASK, FILE_ATTRIBUTE_ENCRYPTED, REPARSE_TAG_WOF};
 use crate::ntfs::{
-    DeletedFile, NtfsVolume, PathStatus, ScanOptions, after_read, read_content, scan,
+    DeletedFile, NtfsVolume, PathStatus, ScanOptions, ScanResult, after_read, read_content,
+    scan_all,
 };
 use crate::partition;
 use crate::source::{MemSource, SectorSource, SliceSource};
@@ -207,13 +208,16 @@ fn fixture(cluster: u32, record: u32) -> Fixture {
     }
 }
 
-fn find<'a>(files: &'a [DeletedFile], path: &str) -> &'a DeletedFile {
-    files.iter().find(|f| f.path() == path).unwrap_or_else(|| {
-        panic!(
-            "{path} not found in {:?}",
-            files.iter().map(|f| f.path()).collect::<Vec<_>>()
-        )
-    })
+fn find<'a>(res: &'a ScanResult, path: &str) -> &'a DeletedFile {
+    res.files
+        .iter()
+        .find(|f| res.path(f) == path)
+        .unwrap_or_else(|| {
+            panic!(
+                "{path} not found in {:?}",
+                res.files.iter().map(|f| res.path(f)).collect::<Vec<_>>()
+            )
+        })
 }
 
 fn recover(src: &dyn SectorSource, cluster: u64, f: &DeletedFile) -> Vec<u8> {
@@ -244,7 +248,7 @@ fn check_volume(src: &(impl SectorSource + ?Sized), fx: &Fixture) {
         sha(&all)
     };
     let vol = NtfsVolume::open(src).unwrap();
-    let res = scan(&vol, &ScanOptions::default(), &NoProgress).unwrap();
+    let res = scan_all(&vol, &ScanOptions::default(), &NoProgress).unwrap();
     let files = &res.files;
     assert_eq!(res.label, "UNLOSTTEST");
     assert!(res.stats.bitmap_ok);
@@ -255,7 +259,7 @@ fn check_volume(src: &(impl SectorSource + ?Sized), fx: &Fixture) {
     let cs = vol.cluster_size();
 
     for (path, want) in &fx.expected {
-        let f = find(files, path);
+        let f = find(&res, path);
         assert!(
             matches!(f.assessment.state, State::LikelyIntact),
             "{path}: {:?}",
@@ -265,23 +269,23 @@ fn check_volume(src: &(impl SectorSource + ?Sized), fx: &Fixture) {
         assert_eq!(sha(&got), sha(want), "{path} content differs");
     }
 
-    let note = find(files, r"\Docs\note.txt");
+    let note = find(&res, r"\Docs\note.txt");
     assert_eq!(note.assessment.reason, Reason::ResidentIntact);
-    assert_eq!(note.path_status, PathStatus::Live);
+    assert_eq!(res.status(note), Some(PathStatus::Live));
     assert_eq!(note.modified, 1_704_067_200);
-    let photo = find(files, r"\Docs\photo.jpg");
+    let photo = find(&res, r"\Docs\photo.jpg");
     assert!(
         matches!(photo.assessment.reason, Reason::ClustersFree { sampled, .. } if sampled >= 1)
     );
     assert_eq!(
-        find(files, r"\Old\old.bin").path_status,
-        PathStatus::DeletedParent
+        res.status(find(&res, r"\Old\old.bin")),
+        Some(PathStatus::DeletedParent)
     );
 
-    let orphan = find(files, r"\Lost folder #32\orphan.txt");
-    assert_eq!(orphan.path_status, PathStatus::Lost);
+    let orphan = find(&res, r"\Lost folder #32\orphan.txt");
+    assert_eq!(res.status(orphan), Some(PathStatus::Lost));
 
-    let partial = find(files, r"\partial.bin");
+    let partial = find(&res, r"\partial.bin");
     assert_eq!(partial.assessment.state, State::Partial);
     assert_eq!(
         partial.assessment.reason,
@@ -290,10 +294,10 @@ fn check_volume(src: &(impl SectorSource + ?Sized), fx: &Fixture) {
             total: 4
         }
     );
-    let gone = find(files, r"\gone.bin");
+    let gone = find(&res, r"\gone.bin");
     assert_eq!(gone.assessment.state, State::Overwritten);
 
-    let trimmed = find(files, r"\trimmed.jpg");
+    let trimmed = find(&res, r"\trimmed.jpg");
     assert_eq!(trimmed.assessment.state, State::Zeroed);
     let mut stats_out = Vec::new();
     let stats = read_content(
@@ -309,7 +313,7 @@ fn check_volume(src: &(impl SectorSource + ?Sized), fx: &Fixture) {
     .unwrap();
     assert_eq!(after_read(&trimmed.assessment, &stats).state, State::Zeroed);
 
-    let notajpeg = find(files, r"\notajpeg.jpg");
+    let notajpeg = find(&res, r"\notajpeg.jpg");
     assert_eq!(notajpeg.assessment.state, State::Partial);
     assert!(matches!(
         notajpeg.assessment.reason,
@@ -317,30 +321,30 @@ fn check_volume(src: &(impl SectorSource + ?Sized), fx: &Fixture) {
     ));
 
     assert_eq!(
-        find(files, r"\secret.docx").assessment.reason,
+        find(&res, r"\secret.docx").assessment.reason,
         Reason::Encrypted
     );
     assert_eq!(
-        find(files, r"\packed.log").assessment.reason,
+        find(&res, r"\packed.log").assessment.reason,
         Reason::Compressed
     );
     assert_eq!(
-        find(files, r"\norun.txt").assessment.state,
+        find(&res, r"\norun.txt").assessment.state,
         State::MetadataOnly
     );
     assert_eq!(
-        find(files, r"\torn.txt").assessment.reason,
+        find(&res, r"\torn.txt").assessment.reason,
         Reason::TornRecord
     );
     assert_eq!(
-        find(files, r"\compact.exe").assessment.reason,
+        find(&res, r"\compact.exe").assessment.reason,
         Reason::WofCompressed
     );
     assert_eq!(
-        find(files, r"\online.pdf").assessment.reason,
+        find(&res, r"\online.pdf").assessment.reason,
         Reason::CloudOnly
     );
-    let empty = find(files, r"\empty.txt");
+    let empty = find(&res, r"\empty.txt");
     assert_eq!(empty.assessment.reason, Reason::EmptyFile);
     assert_eq!(empty.streams, 1);
 
@@ -404,7 +408,7 @@ fn cancels_and_truncates() {
         max_files: 3,
         max_samples: 0,
     };
-    let res = scan(&vol, &small, &NoProgress).unwrap();
+    let res = scan_all(&vol, &small, &NoProgress).unwrap();
     assert_eq!(res.files.len(), 3);
     assert!(res.stats.truncated);
     assert!(
@@ -415,7 +419,7 @@ fn cancels_and_truncates() {
     // The first chunk holds every record, so cancellation shows up at the sampling stage.
     let c = CountingCancel(std::sync::atomic::AtomicU64::new(0));
     assert!(matches!(
-        scan(&vol, &ScanOptions::default(), &c),
+        scan_all(&vol, &ScanOptions::default(), &c),
         Err(crate::Error::Cancelled)
     ));
 }
@@ -450,7 +454,7 @@ fn survives_random_damage() {
         }
         let src = MemSource::new(img);
         if let Ok(vol) = NtfsVolume::open(&src as &dyn SectorSource)
-            && let Ok(res) = scan(&vol, &ScanOptions::default(), &NoProgress)
+            && let Ok(res) = scan_all(&vol, &ScanOptions::default(), &NoProgress)
         {
             let readable = res.files.iter().filter(|f| {
                 !matches!(

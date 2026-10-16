@@ -52,6 +52,11 @@ impl FileRef {
             sequence: (v >> 48) as u16,
         }
     }
+
+    /// The on-disk form: record number in the low 48 bits, sequence above.
+    pub fn to_u64(self) -> u64 {
+        (self.record & 0x0000_FFFF_FFFF_FFFF) | (u64::from(self.sequence) << 48)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

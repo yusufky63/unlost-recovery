@@ -1,33 +1,48 @@
 //! Request handling shared by the in-process engine and the elevated broker. The same code
 //! serves both, so the broker protocol is exercised by ordinary tests without a pipe or UAC.
+//!
+//! Scan results live in a session database ([`Store`]) in the UI process. A scan run here
+//! streams into its database through a writer thread. A scan run by the broker streams its
+//! findings over the pipe instead (the broker never writes files); the engine feeds them into a
+//! database here and [`Session::adopt`]s it. The broker keeps only the open source and a key
+//! per scan: read requests bring the content location back, tagged with that key.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::sync_channel;
 use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde_json::{Value, json};
+use unlost_formats::findings::{self, FileRow, FolderRow, Message};
 use unlost_formats::magic::{self, Category};
-use unlost_formats::ntfs::{self, DeletedFile, NtfsVolume, ScanOptions};
+use unlost_formats::ntfs::{
+    self, DeletedFile, NtfsVolume, PathStatus, ScanOptions, ScanSink, ScanStats, location,
+};
 use unlost_formats::partition::FsKind;
-use unlost_formats::{SectorSource, State};
+use unlost_formats::{Assessment, SectorSource, State};
 
 use crate::job::{Job, ProgressSnapshot};
 use crate::protocol::{
-    EntryView, Hello, PROTOCOL_VERSION, Page, Query, ReadResult, Request, ScanSummary, SortKey,
+    EntryView, Hello, PROTOCOL_VERSION, Page, Query, ReadResult, Request, ScanSummary, Sealed, hex,
+    unhex,
 };
+use crate::seal::Sealer;
 use crate::sources::{self, SourceSpec};
-use crate::{Error, Result, shadow, system};
+use crate::store::Store;
+use crate::{Error, Result, shadow, system, workspace};
 
 /// Bytes per data event while streaming file content.
 const DATA_CHUNK: usize = 1 << 20;
-const MAX_PAGE: u32 = 500;
 /// Records accepted in one `Entries` request.
 const MAX_ENTRIES: usize = 200_000;
-/// Scans kept in memory; the oldest is dropped beyond this.
+/// Scans kept loaded; the oldest is dropped (and its database deleted) beyond this.
 const MAX_SCANS: usize = 4;
+/// Batches waiting for the database writer before the scan waits.
+const WRITE_QUEUE: usize = 4;
 
 /// Where a request's progress and content go.
 pub trait Sink: Send + Sync {
@@ -36,27 +51,47 @@ pub trait Sink: Send + Sync {
     fn data(&self, id: u64, bytes: &[u8]) -> Result<()>;
 }
 
-struct ScanData {
-    src: Arc<dyn SectorSource>,
-    cluster: u64,
-    files: Vec<DeletedFile>,
-    by_record: HashMap<u64, usize>,
+enum Loaded {
+    /// Scanned in this process: results in `store`, content read from `src`.
+    Local {
+        store: Store,
+        src: Arc<dyn SectorSource>,
+        cluster: u64,
+    },
+    /// Scanned by the broker: results in `store`, content read through the broker.
+    Remote(Store),
+    /// The broker's side of a scan: the source, and the key its locations were tagged with.
+    Served {
+        src: Arc<dyn SectorSource>,
+        cluster: u64,
+        sealer: Sealer,
+    },
 }
 
 #[derive(Default)]
 pub struct Session {
-    scans: Mutex<Vec<(u32, Arc<ScanData>)>>,
+    /// Folder for session databases when a scan request names none. `None` in the broker:
+    /// it never writes files, so its scans stream their findings back instead.
+    workspace: Option<PathBuf>,
+    scans: Mutex<Vec<(u32, Arc<Loaded>)>>,
     jobs: Mutex<HashMap<u64, Arc<Job>>>,
     next_scan: AtomicU32,
+    next_store: AtomicU64,
 }
 
 impl Session {
-    pub fn new() -> Self {
-        Self::default()
+    /// A session in the UI process, keeping scan databases in `workspace` unless a request
+    /// names another folder. The caller has checked the folder with [`workspace::approve`].
+    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        Session {
+            workspace: Some(workspace.into()),
+            ..Self::default()
+        }
     }
 
-    /// Scan ids start above `base`, so two sessions (UI and broker) never hand out the same id.
-    pub fn with_scan_base(base: u32) -> Self {
+    /// The broker's session. Scan ids start above `base`, so they never collide with the
+    /// UI's own.
+    pub fn broker(base: u32) -> Self {
         Session {
             next_scan: AtomicU32::new(base),
             ..Self::default()
@@ -80,26 +115,29 @@ impl Session {
                 self.cancel(target);
                 Ok(Value::Null)
             }
-            Request::Scan { source } => {
+            Request::Scan { source, workspace } => {
                 let job = self.job(id);
-                let r = with_ticker(id, &job, sink, || self.scan(source, &job));
+                let r = with_ticker(id, &job, sink, || {
+                    self.scan(id, source, workspace.map(PathBuf::from), &job, sink)
+                });
                 self.jobs.lock().remove(&id);
                 Ok(serde_json::to_value(r?)?)
             }
             Request::Query { scan, query } => Ok(serde_json::to_value(self.query(scan, &query)?)?),
-            Request::Read { scan, record } => {
+            Request::Read {
+                scan,
+                record,
+                sealed,
+            } => {
                 let job = self.job(id);
-                let r = self.read(id, scan, record, &job, sink);
+                let r = self.read(id, scan, record, sealed, &job, sink);
                 self.jobs.lock().remove(&id);
                 Ok(serde_json::to_value(r?)?)
             }
             Request::Entries { scan, records } => {
                 let d = self.get(scan)?;
-                let rows: Vec<EntryView> = records
-                    .iter()
-                    .take(MAX_ENTRIES)
-                    .filter_map(|r| d.by_record.get(r).map(|&i| view(&d.files[i])))
-                    .collect();
+                let n = records.len().min(MAX_ENTRIES);
+                let rows: Vec<EntryView> = store_of(&d)?.entries(&records[..n])?;
                 Ok(serde_json::to_value(rows)?)
             }
             Request::Forget { scan } => {
@@ -119,13 +157,63 @@ impl Session {
         }
     }
 
+    /// Drops every scan and deletes their databases (the app is closing).
+    pub fn forget_all(&self) {
+        self.scans.lock().clear();
+    }
+
+    /// A new, empty database in `dir` (or the default folder), for a scan's findings.
+    pub fn create_store(&self, dir: Option<&Path>) -> Result<Store> {
+        let dir = dir
+            .or(self.workspace.as_deref())
+            .ok_or_else(|| Error::Refused("the administrator helper writes no files".into()))?;
+        let n = self.next_store.fetch_add(1, Ordering::Relaxed) + 1;
+        Store::create(dir, &workspace::file_name(n))
+    }
+
+    /// Takes over a database the engine filled from the broker's scan `scan`.
+    pub fn adopt(&self, scan: u32, store: Store) {
+        self.insert(scan, Loaded::Remote(store));
+    }
+
+    /// What the broker needs to read `record` of its scan `scan`: the stored location with
+    /// the broker's own tag, and the scan's grade.
+    pub fn sealed(&self, scan: u32, record: u64) -> Result<Sealed> {
+        let d = self.get(scan)?;
+        let s = store_of(&d)?
+            .content(record)?
+            .ok_or_else(|| Error::Refused(format!("record {record} is not in scan {scan}")))?;
+        refuse_unreadable(&s.assessment)?;
+        Ok(Sealed {
+            location: hex(&s.location),
+            tag: hex(&s.tag),
+            assessment: s.assessment,
+        })
+    }
+
     fn job(&self, id: u64) -> Arc<Job> {
         let job = Arc::new(Job::new());
         self.jobs.lock().insert(id, job.clone());
         job
     }
 
-    fn scan(&self, source: SourceSpec, job: &Job) -> Result<ScanSummary> {
+    fn insert(&self, scan: u32, loaded: Loaded) {
+        let mut scans = self.scans.lock();
+        scans.retain(|(s, _)| *s != scan);
+        scans.push((scan, Arc::new(loaded)));
+        while scans.len() > MAX_SCANS {
+            scans.remove(0);
+        }
+    }
+
+    fn scan(
+        &self,
+        id: u64,
+        source: SourceSpec,
+        dir: Option<PathBuf>,
+        job: &Job,
+        sink: &dyn Sink,
+    ) -> Result<ScanSummary> {
         let opened = sources::open(&source)?;
         if opened.fs != FsKind::Ntfs {
             return Err(Error::Refused(format!(
@@ -134,44 +222,51 @@ impl Session {
             )));
         }
         let vol = NtfsVolume::open(opened.src.clone())?;
-        let res = ntfs::scan(&vol, &ScanOptions::default(), job)?;
         let scan = self.next_scan.fetch_add(1, Ordering::Relaxed) + 1;
-        let mut counts: BTreeMap<State, u64> = BTreeMap::new();
-        for f in &res.files {
-            *counts.entry(f.assessment.state).or_default() += 1;
-        }
+        let opts = ScanOptions::default();
+        let cluster = vol.cluster_size();
+        let (stats, files, counts, loaded) = if self.workspace.is_none() {
+            // The broker: findings go back over the pipe, each location tagged so a later
+            // read request can prove the broker produced it.
+            let sealer = Sealer::new(scan)?;
+            let mut send = |b: Vec<u8>| sink.data(id, &b);
+            let mut out = BatchSink::new(Some(&sealer), &mut send);
+            let stats = run_scan(&vol, &opts, job, &mut out)?;
+            let (files, counts) = (out.files, std::mem::take(&mut out.counts));
+            drop(out);
+            let served = Loaded::Served {
+                src: opened.src,
+                cluster,
+                sealer,
+            };
+            (stats, files, counts, served)
+        } else {
+            let store = self.create_store(dir.as_deref())?;
+            let stats = scan_into(&vol, &opts, job, &store)?;
+            let (files, counts) = store.finish()?;
+            let local = Loaded::Local {
+                store,
+                src: opened.src,
+                cluster,
+            };
+            (stats, files, counts, local)
+        };
         let summary = ScanSummary {
             scan,
             source,
-            label: res.label,
+            label: vol.label(),
             fs: opened.fs,
             cluster_size: vol.boot.cluster_size,
             volume_bytes: vol.volume_bytes(),
-            files: res.files.len() as u64,
-            stats: res.stats,
+            files,
+            stats,
             counts,
         };
-        let by_record = res
-            .files
-            .iter()
-            .enumerate()
-            .map(|(i, f)| (f.record, i))
-            .collect();
-        let data = Arc::new(ScanData {
-            src: opened.src,
-            cluster: vol.cluster_size(),
-            files: res.files,
-            by_record,
-        });
-        let mut scans = self.scans.lock();
-        scans.push((scan, data));
-        while scans.len() > MAX_SCANS {
-            scans.remove(0);
-        }
+        self.insert(scan, loaded);
         Ok(summary)
     }
 
-    fn get(&self, scan: u32) -> Result<Arc<ScanData>> {
+    fn get(&self, scan: u32) -> Result<Arc<Loaded>> {
         self.scans
             .lock()
             .iter()
@@ -182,61 +277,7 @@ impl Session {
 
     fn query(&self, scan: u32, q: &Query) -> Result<Page> {
         let d = self.get(scan)?;
-        let needle = fold(q.text.trim());
-        let mut counts: BTreeMap<State, u64> = BTreeMap::new();
-        let mut hits: Vec<usize> = Vec::new();
-        for (i, f) in d.files.iter().enumerate() {
-            if let Some(c) = q.category
-                && magic::category(&magic::extension(&f.name)) != c
-            {
-                continue;
-            }
-            if !needle.is_empty()
-                && !fold(&f.name).contains(&needle)
-                && !fold(&f.folder).contains(&needle)
-            {
-                continue;
-            }
-            *counts.entry(f.assessment.state).or_default() += 1;
-            if q.states.is_empty() || q.states.contains(&f.assessment.state) {
-                hits.push(i);
-            }
-        }
-        let files = &d.files;
-        // Text keys are folded once per hit, not once per comparison.
-        match q.sort {
-            SortKey::Name => hits.sort_by_cached_key(|&i| fold(&files[i].name)),
-            SortKey::Folder => {
-                hits.sort_by_cached_key(|&i| (fold(&files[i].folder), fold(&files[i].name)))
-            }
-            SortKey::State => hits.sort_by_key(|&i| {
-                (
-                    files[i].assessment.state.rank(),
-                    std::cmp::Reverse(files[i].modified),
-                )
-            }),
-            SortKey::Size => hits.sort_by_key(|&i| files[i].size),
-            SortKey::Modified => hits.sort_by_key(|&i| files[i].modified),
-        }
-        if q.desc {
-            hits.reverse();
-        }
-        let limit = if q.limit == 0 {
-            200
-        } else {
-            q.limit.min(MAX_PAGE)
-        } as usize;
-        let rows = hits
-            .iter()
-            .skip(q.offset as usize)
-            .take(limit)
-            .map(|&i| view(&files[i]))
-            .collect();
-        Ok(Page {
-            total: hits.len() as u64,
-            rows,
-            counts,
-        })
+        store_of(&d)?.query(q)
     }
 
     fn read(
@@ -244,21 +285,48 @@ impl Session {
         id: u64,
         scan: u32,
         record: u64,
+        sealed: Option<Sealed>,
         job: &Job,
         sink: &dyn Sink,
     ) -> Result<ReadResult> {
         let d = self.get(scan)?;
-        let f = d
-            .by_record
-            .get(&record)
-            .map(|&i| &d.files[i])
-            .ok_or_else(|| Error::Refused(format!("record {record} is not in scan {scan}")))?;
-        if matches!(
-            f.assessment.state,
-            State::MetadataOnly | State::NotRecoverableHere
-        ) {
-            return Err(Error::Refused(f.assessment.reason.english()));
-        }
+        let (src, cluster, location, pre) = match &*d {
+            Loaded::Local {
+                store,
+                src,
+                cluster,
+            } => {
+                let s = store.content(record)?.ok_or_else(|| {
+                    Error::Refused(format!("record {record} is not in scan {scan}"))
+                })?;
+                (src, *cluster, s.location, s.assessment)
+            }
+            Loaded::Served {
+                src,
+                cluster,
+                sealer,
+            } => {
+                let s = sealed.ok_or_else(|| {
+                    Error::Refused("the read request does not say where the content is".into())
+                })?;
+                let (Some(location), Some(tag)) = (unhex(&s.location), unhex(&s.tag)) else {
+                    return Err(Error::Refused("malformed content location".into()));
+                };
+                if !sealer.verify(record, &location, &tag) {
+                    return Err(Error::Refused(
+                        "the content location was not issued by this scan".into(),
+                    ));
+                }
+                (src, *cluster, location, s.assessment)
+            }
+            Loaded::Remote(_) => {
+                return Err(Error::Refused(
+                    "this scan is read through the administrator helper".into(),
+                ));
+            }
+        };
+        refuse_unreadable(&pre)?;
+        let data = location::decode(&location)?;
         let mut pending: Vec<u8> = Vec::with_capacity(DATA_CHUNK);
         let mut out = |b: &[u8]| -> unlost_formats::Result<()> {
             let mut rest = b;
@@ -274,12 +342,12 @@ impl Session {
             }
             Ok(())
         };
-        let stats = ntfs::read_content(&d.src, d.cluster, &f.data, &mut out, job)?;
+        let stats = ntfs::read_content(src, cluster, &data, &mut out, job)?;
         if !pending.is_empty() {
             sink.data(id, &pending)?;
         }
         Ok(ReadResult {
-            assessment: ntfs::after_read(&f.assessment, &stats),
+            assessment: ntfs::after_read(&pre, &stats),
             stats,
         })
     }
@@ -310,6 +378,152 @@ impl Session {
     }
 }
 
+fn store_of(d: &Loaded) -> Result<&Store> {
+    match d {
+        Loaded::Local { store, .. } | Loaded::Remote(store) => Ok(store),
+        Loaded::Served { .. } => Err(Error::Refused(
+            "the administrator helper keeps no scan results".into(),
+        )),
+    }
+}
+
+/// Metadata-only files are refused, not streamed as zeros.
+fn refuse_unreadable(a: &Assessment) -> Result<()> {
+    if matches!(a.state, State::MetadataOnly | State::NotRecoverableHere) {
+        return Err(Error::Refused(a.reason.english()));
+    }
+    Ok(())
+}
+
+/// Runs the scan, preferring the sink's own failure (a full disk, a closed pipe) over the
+/// cancellation it caused.
+fn run_scan<S: SectorSource>(
+    vol: &NtfsVolume<S>,
+    opts: &ScanOptions,
+    job: &Job,
+    out: &mut BatchSink<'_>,
+) -> Result<ScanStats> {
+    let r = ntfs::scan(vol, opts, job, out);
+    if let Some(e) = out.failed.take() {
+        return Err(e);
+    }
+    let stats = r?;
+    out.flush()?;
+    Ok(stats)
+}
+
+/// Scans into `store`, with the database writes on their own thread so they overlap the
+/// `$MFT` reads. The queue between them is short: a slow disk slows the scan instead of
+/// filling memory.
+fn scan_into<S: SectorSource>(
+    vol: &NtfsVolume<S>,
+    opts: &ScanOptions,
+    job: &Job,
+    store: &Store,
+) -> Result<ScanStats> {
+    let (tx, rx) = sync_channel::<Vec<u8>>(WRITE_QUEUE);
+    std::thread::scope(|s| {
+        let writer = s.spawn(move || -> Result<()> {
+            for b in rx {
+                store.ingest(&b)?;
+            }
+            Ok(())
+        });
+        let scanned = {
+            let mut send = move |b: Vec<u8>| {
+                tx.send(b)
+                    .map_err(|_| Error::Database("the database writer stopped".into()))
+            };
+            let mut out = BatchSink::new(None, &mut send);
+            run_scan(vol, opts, job, &mut out)
+        };
+        let written = writer
+            .join()
+            .unwrap_or_else(|_| Err(Error::Database("the database writer panicked".into())));
+        // A write failure explains the scan's failure to hand over a batch.
+        written?;
+        scanned
+    })
+}
+
+/// Packs findings into [`findings`] batches and hands each full batch to `out`.
+struct BatchSink<'a> {
+    buf: Vec<u8>,
+    out: &'a mut dyn FnMut(Vec<u8>) -> Result<()>,
+    sealer: Option<&'a Sealer>,
+    files: u64,
+    counts: BTreeMap<State, u64>,
+    /// The error that made a hand-over fail; the scan itself only sees a cancellation.
+    failed: Option<Error>,
+}
+
+impl<'a> BatchSink<'a> {
+    fn new(sealer: Option<&'a Sealer>, out: &'a mut dyn FnMut(Vec<u8>) -> Result<()>) -> Self {
+        BatchSink {
+            buf: Vec::with_capacity(findings::BATCH_BYTES + (64 << 10)),
+            out,
+            sealer,
+            files: 0,
+            counts: BTreeMap::new(),
+            failed: None,
+        }
+    }
+
+    fn push(&mut self, m: &Message) -> unlost_formats::Result<()> {
+        findings::put(&mut self.buf, m);
+        if self.buf.len() >= findings::BATCH_BYTES {
+            self.flush().map_err(|e| {
+                self.failed = Some(e);
+                unlost_formats::Error::Cancelled
+            })?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        let b = std::mem::replace(
+            &mut self.buf,
+            Vec::with_capacity(findings::BATCH_BYTES + (64 << 10)),
+        );
+        (self.out)(b)
+    }
+}
+
+impl ScanSink for BatchSink<'_> {
+    fn file(&mut self, f: DeletedFile) -> unlost_formats::Result<()> {
+        let mut row = FileRow::new(&f);
+        if let Some(s) = self.sealer {
+            row.tag = s.tag(row.record, &row.location);
+        }
+        self.files += 1;
+        *self.counts.entry(row.assessment.state).or_default() += 1;
+        self.push(&Message::File(row))
+    }
+
+    fn folder(&mut self, key: u64, path: &str, status: PathStatus) -> unlost_formats::Result<()> {
+        self.push(&Message::Folder(FolderRow {
+            key,
+            path: path.to_string(),
+            status,
+        }))
+    }
+
+    fn regrade(&mut self, record: u64, a: &Assessment) -> unlost_formats::Result<()> {
+        // Only files graded "likely intact, not sampled" are sampled.
+        if let Some(n) = self.counts.get_mut(&State::LikelyIntact) {
+            *n = n.saturating_sub(1);
+        }
+        *self.counts.entry(a.state).or_default() += 1;
+        self.push(&Message::Regrade {
+            record,
+            assessment: a.clone(),
+        })
+    }
+}
+
 /// Runs `work` while sending a progress snapshot every 200 ms.
 fn with_ticker<T>(id: u64, job: &Job, sink: &dyn Sink, work: impl FnOnce() -> T) -> T {
     let done = AtomicBool::new(false);
@@ -333,24 +547,6 @@ fn with_ticker<T>(id: u64, job: &Job, sink: &dyn Sink, work: impl FnOnce() -> T)
         done.store(true, Ordering::Relaxed);
         r
     })
-}
-
-fn view(f: &DeletedFile) -> EntryView {
-    let ext = magic::extension(&f.name);
-    EntryView {
-        record: f.record,
-        category: magic::category(&ext),
-        ext,
-        name: f.name.clone(),
-        folder: f.folder.to_string(),
-        path_status: f.path_status,
-        size: f.size,
-        created: f.created,
-        modified: f.modified,
-        assessment: f.assessment.clone(),
-        links: f.links,
-        streams: f.streams,
-    }
 }
 
 /// Case folding for search that treats Turkish dotted and dotless i as plain `i`, so
@@ -398,23 +594,31 @@ pub(crate) mod tests_support {
         std::fs::write(&path, b.build()).unwrap();
         (path, photo)
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::tests_support::image;
-    use super::*;
-
+    /// Records the bytes and progress each request produced.
     pub struct Collect {
-        pub data: Mutex<HashMap<u64, Vec<u8>>>,
-        pub ticks: AtomicU32,
+        pub data: parking_lot::Mutex<std::collections::HashMap<u64, Vec<u8>>>,
+        pub ticks: std::sync::atomic::AtomicU32,
     }
 
-    impl Sink for Collect {
-        fn progress(&self, _id: u64, _p: ProgressSnapshot) {
-            self.ticks.fetch_add(1, Ordering::Relaxed);
+    impl Collect {
+        pub fn new() -> Self {
+            Collect {
+                data: parking_lot::Mutex::new(std::collections::HashMap::new()),
+                ticks: std::sync::atomic::AtomicU32::new(0),
+            }
         }
-        fn data(&self, id: u64, bytes: &[u8]) -> Result<()> {
+        pub fn take(&self, id: u64) -> Vec<u8> {
+            self.data.lock().remove(&id).unwrap_or_default()
+        }
+    }
+
+    impl super::Sink for Collect {
+        fn progress(&self, _id: u64, _p: crate::job::ProgressSnapshot) {
+            self.ticks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn data(&self, id: u64, bytes: &[u8]) -> crate::Result<()> {
             self.data
                 .lock()
                 .entry(id)
@@ -423,25 +627,55 @@ mod tests {
             Ok(())
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tests_support::{Collect, image};
+    use super::*;
+    use crate::protocol::SortKey;
+
+    fn summary(v: Value) -> ScanSummary {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn read(record: u64, scan: u32) -> Request {
+        Request::Read {
+            scan,
+            record,
+            sealed: None,
+        }
+    }
 
     #[test]
     fn scan_query_read_through_the_session() {
         let tmp = tempfile::tempdir().unwrap();
         let (path, photo) = image(tmp.path());
-        let s = Session::new();
-        let sink = Collect {
-            data: Mutex::new(HashMap::new()),
-            ticks: AtomicU32::new(0),
-        };
+        let ws = tmp.path().join("sessions");
+        let s = Session::new(&ws);
+        let sink = Collect::new();
         let source = SourceSpec::Image {
             path: path.to_string_lossy().into(),
             partition: None,
         };
-        let summary: ScanSummary =
-            serde_json::from_value(s.handle(1, Request::Scan { source }, &sink).unwrap()).unwrap();
+        let summary = summary(
+            s.handle(
+                1,
+                Request::Scan {
+                    source,
+                    workspace: None,
+                },
+                &sink,
+            )
+            .unwrap(),
+        );
         assert_eq!(summary.files, 3);
         assert_eq!(summary.label, "UNLOSTTEST");
+        assert_eq!(summary.counts.get(&State::LikelyIntact), Some(&2));
         assert!(sink.ticks.load(Ordering::Relaxed) >= 1);
+        // The findings are in a database in the workspace, not in memory.
+        let dbs: Vec<_> = std::fs::read_dir(&ws).unwrap().flatten().collect();
+        assert_eq!(dbs.len(), 1);
 
         let q = Query {
             text: "IĞDIR".into(),
@@ -483,51 +717,47 @@ mod tests {
         .unwrap();
         assert_eq!(page.total, 2);
         assert_eq!(page.rows[0].name, "IMG_0001.jpg");
+        assert!(matches!(
+            page.rows[0].assessment.reason,
+            unlost_formats::Reason::ClustersFree { .. }
+        ));
         assert_eq!(page.counts.get(&State::MetadataOnly), Some(&1));
 
-        let r: ReadResult = serde_json::from_value(
+        let rows: Vec<EntryView> = serde_json::from_value(
             s.handle(
                 4,
-                Request::Read {
+                Request::Entries {
                     scan: summary.scan,
-                    record: 40,
+                    records: vec![41, 40, 7],
                 },
                 &sink,
             )
             .unwrap(),
         )
         .unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.record).collect::<Vec<_>>(),
+            vec![41, 40]
+        );
+
+        let r: ReadResult =
+            serde_json::from_value(s.handle(5, read(40, summary.scan), &sink).unwrap()).unwrap();
         assert_eq!(r.assessment.state, State::LikelyIntact);
-        assert_eq!(sink.data.lock().get(&4).unwrap(), &photo);
+        assert_eq!(sink.take(5), photo);
+        let _ = s.handle(6, read(41, summary.scan), &sink).unwrap();
+        assert_eq!(sink.take(6), b"not");
 
         // Metadata-only files are refused, not streamed as zeros.
         assert!(matches!(
-            s.handle(
-                5,
-                Request::Read {
-                    scan: summary.scan,
-                    record: 42
-                },
-                &sink
-            ),
+            s.handle(7, read(42, summary.scan), &sink),
             Err(Error::Refused(_))
         ));
-        assert!(
-            s.handle(
-                6,
-                Request::Read {
-                    scan: 99,
-                    record: 40
-                },
-                &sink
-            )
-            .is_err()
-        );
-        s.handle(7, Request::Forget { scan: summary.scan }, &sink)
+        assert!(s.handle(8, read(40, 99), &sink).is_err());
+        s.handle(9, Request::Forget { scan: summary.scan }, &sink)
             .unwrap();
         assert!(
             s.handle(
-                8,
+                10,
                 Request::Query {
                     scan: summary.scan,
                     query: Query::default()
@@ -536,6 +766,103 @@ mod tests {
             )
             .is_err()
         );
+        // Forgetting deletes the database and its folder.
+        assert!(!ws.exists());
+    }
+
+    /// The broker's half and the UI's half in one process: findings cross as batches, the UI
+    /// keeps them, and reads go back to the broker with the tagged location.
+    #[test]
+    fn broker_streams_and_reads_only_what_it_issued() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (path, photo) = image(tmp.path());
+        let broker = Session::broker(1_000_000);
+        let ui = Session::new(tmp.path().join("sessions"));
+        let sink = Collect::new();
+        let source = SourceSpec::Image {
+            path: path.to_string_lossy().into(),
+            partition: None,
+        };
+        // The broker ignores a workspace: it writes nothing.
+        let summary = summary(
+            broker
+                .handle(
+                    1,
+                    Request::Scan {
+                        source,
+                        workspace: Some(tmp.path().join("nope").to_string_lossy().into()),
+                    },
+                    &sink,
+                )
+                .unwrap(),
+        );
+        assert!(!tmp.path().join("nope").exists());
+        assert!(summary.scan > 1_000_000);
+        assert_eq!(summary.files, 3);
+        assert_eq!(summary.counts.get(&State::LikelyIntact), Some(&2));
+        let stream = sink.take(1);
+        assert!(!stream.is_empty());
+        // The broker answers no queries: it has no results to answer from.
+        assert!(
+            broker
+                .handle(
+                    2,
+                    Request::Query {
+                        scan: summary.scan,
+                        query: Query::default()
+                    },
+                    &sink
+                )
+                .is_err()
+        );
+
+        let store = ui.create_store(None).unwrap();
+        store.ingest(&stream).unwrap();
+        assert_eq!(store.finish().unwrap().0, 3);
+        ui.adopt(summary.scan, store);
+        let page: Page = serde_json::from_value(
+            ui.handle(
+                3,
+                Request::Query {
+                    scan: summary.scan,
+                    query: Query::default(),
+                },
+                &sink,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(page.total, 3);
+        assert_eq!(page.rows[0].folder, r"\Fotoğraflar");
+        // The UI cannot read a broker scan itself.
+        assert!(ui.handle(4, read(40, summary.scan), &sink).is_err());
+
+        let sealed = ui.sealed(summary.scan, 40).unwrap();
+        let req = |record, sealed| Request::Read {
+            scan: summary.scan,
+            record,
+            sealed: Some(sealed),
+        };
+        let r: ReadResult =
+            serde_json::from_value(broker.handle(5, req(40, sealed.clone()), &sink).unwrap())
+                .unwrap();
+        assert_eq!(r.assessment.state, State::LikelyIntact);
+        assert_eq!(sink.take(5), photo);
+
+        // Without a location, with another record's tag, or with a forged location: refused.
+        assert!(broker.handle(6, read(40, summary.scan), &sink).is_err());
+        assert!(broker.handle(7, req(41, sealed.clone()), &sink).is_err());
+        let mut forged = sealed.clone();
+        let mut loc = unhex(&forged.location).unwrap();
+        *loc.last_mut().unwrap() ^= 1;
+        forged.location = hex(&loc);
+        assert!(matches!(
+            broker.handle(8, req(40, forged), &sink),
+            Err(Error::Refused(_))
+        ));
+        assert!(sink.take(6).is_empty() && sink.take(7).is_empty() && sink.take(8).is_empty());
+        // Name-only files are refused before anything is sent.
+        assert!(ui.sealed(summary.scan, 42).is_err());
     }
 
     #[test]

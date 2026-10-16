@@ -2,8 +2,10 @@
 //!
 //! It accepts nothing but a pipe name and the UI's process id on its command line, refuses to
 //! serve another user than the one running the UI, connects to the UI's pipes, and answers
-//! requests with the shared [`Session`]. It never writes files; content goes back over the pipe
-//! and the non-elevated UI writes it. It exits when the pipe closes or the UI process ends.
+//! requests with the shared [`Session`]. It never writes files; content and scan findings go
+//! back over the pipe and the non-elevated UI writes them. Per scan it keeps only the open
+//! source and the key that tags the content locations it streamed (see [`crate::seal`]). It
+//! exits when the pipe closes or the UI process ends.
 
 use std::fs::File;
 use std::sync::Arc;
@@ -72,7 +74,7 @@ pub fn run(args: &[String]) -> i32 {
     let sink = Arc::new(PipeSink {
         evt: Mutex::new(evt),
     });
-    let session = Arc::new(Session::with_scan_base(BROKER_SCAN_BASE));
+    let session = Arc::new(Session::broker(BROKER_SCAN_BASE));
     loop {
         let frame = match read_frame(&mut req) {
             Ok(Some(f)) => f,

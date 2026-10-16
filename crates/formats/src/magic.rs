@@ -16,6 +16,25 @@ pub enum Category {
     Other,
 }
 
+impl Category {
+    pub const ALL: [Category; 6] = [
+        Category::Photo,
+        Category::Video,
+        Category::Document,
+        Category::Archive,
+        Category::Audio,
+        Category::Other,
+    ];
+
+    pub fn index(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_index(i: u8) -> Option<Category> {
+        Self::ALL.get(usize::from(i)).copied()
+    }
+}
+
 pub fn extension(name: &str) -> String {
     match name.rfind('.') {
         Some(i) if i > 0 && i + 1 < name.len() => name[i + 1..].to_ascii_lowercase(),

@@ -59,7 +59,10 @@ export const api = {
   shadowList: () => call<ShadowCopy[]>("shadow_list"),
   shadowDir: (device: string, path: string) => call<ShadowEntry[]>("shadow_dir", { device, path }),
   imagePartitions: (path: string) => call<Partition[]>("image_partitions", { path }),
-  scanStart: (source: SourceSpec) => call<ScanSummary>("scan_start", { source }),
+  /** `workspace`: a folder on another disk for the scan's database, when the app's data folder
+   *  shares a disk with the source (the engine answers `workspace_same_disk` then). */
+  scanStart: (source: SourceSpec, workspace?: string, confirmUnknown?: boolean) =>
+    call<ScanSummary>("scan_start", { source, workspace: workspace ?? null, confirmUnknown: confirmUnknown ?? false }),
   scanQuery: (scan: number, query: Query) => call<Page>("scan_query", { scan, query }),
   scanEntries: (scan: number, records: number[]) => call<EntryView[]>("scan_entries", { scan, records }),
   scanForget: (scan: number) => call<void>("scan_forget", { scan }),

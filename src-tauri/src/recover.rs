@@ -180,7 +180,12 @@ fn ntfs(
             Method::NtfsRecord,
             &row.assessment,
             |sink| {
-                let call = ctx.engine.call(Request::Read { scan, record }, admin)?;
+                let read = Request::Read {
+                    scan,
+                    record,
+                    sealed: None,
+                };
+                let call = ctx.engine.call(read, admin)?;
                 let v = call.wait(
                     |_| {},
                     |b| {

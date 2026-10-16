@@ -4,7 +4,7 @@
 
 use crate::ntfs::{self, NtfsVolume, ScanOptions};
 use crate::source::MemSource;
-use crate::{NoProgress, partition, recyclebin, vhdx};
+use crate::{NoProgress, findings, partition, recyclebin, vhdx};
 
 /// A whole volume image: boot sector, `$MFT`, bitmap, every deleted file's content.
 pub fn ntfs_volume(data: &[u8]) {
@@ -16,7 +16,7 @@ pub fn ntfs_volume(data: &[u8]) {
         max_files: 10_000,
         max_samples: 1_000,
     };
-    if let Ok(res) = ntfs::scan(&vol, &opts, &NoProgress) {
+    if let Ok(res) = ntfs::scan_all(&vol, &opts, &NoProgress) {
         for f in res.files.iter().take(64) {
             let _ = ntfs::read_content(
                 &src,
@@ -69,6 +69,18 @@ pub fn partitions(data: &[u8]) {
     let _ = partition::list(&MemSource::new(data.to_vec()));
 }
 
+/// A stored content location, as a read request hands it to the broker.
+pub fn content_location(data: &[u8]) {
+    if let Ok(d) = ntfs::location::decode(data) {
+        let _ = ntfs::location::encode(&d);
+    }
+}
+
+/// A batch of scan results, as the UI receives it from the broker.
+pub fn scan_batch(data: &[u8]) {
+    let _ = findings::decode(data);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +130,37 @@ mod tests {
             crate::ntfs::runlist::encode(&[(Some(100), 8), (None, 4), (Some(50), 2)]),
             crate::recyclebin::build_v2(10, 133_485_408_000_000_000, r"C:\seed.txt"),
             vec![0u8; 512],
+            crate::ntfs::location::encode(&crate::ntfs::DataLocation::NonResident(
+                crate::ntfs::NonResidentData {
+                    runs: vec![
+                        crate::ntfs::Run {
+                            vcn: 0,
+                            lcn: Some(100),
+                            len: 8,
+                        },
+                        crate::ntfs::Run {
+                            vcn: 8,
+                            lcn: None,
+                            len: 4,
+                        },
+                    ],
+                    real: 40_000,
+                    initialized: 40_000,
+                    compressed: false,
+                },
+            )),
+            {
+                let mut b = Vec::new();
+                findings::put(
+                    &mut b,
+                    &findings::Message::Folder(findings::FolderRow {
+                        key: 5,
+                        path: r"\seed".into(),
+                        status: crate::ntfs::PathStatus::Live,
+                    }),
+                );
+                b
+            },
         ];
         for _ in 0..4000 {
             for s in &seeds {
@@ -127,12 +170,16 @@ mod tests {
                 boot_sector(&m);
                 recycle_info(&m);
                 partitions(&m);
+                content_location(&m);
+                scan_batch(&m);
             }
             let len = (rng.next() % 2048) as usize;
             let junk: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
             file_record(&junk);
             runlist(&junk);
             recycle_info(&junk);
+            content_location(&junk);
+            scan_batch(&junk);
         }
     }
 

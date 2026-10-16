@@ -46,9 +46,9 @@ Hayır, asla. Oluşturmak, kurtarılan birime yazmak demektir.
 
 Hayır. Hiçbir ağ bağlantısı kurmaz. "Diğer yerler" sayfasındaki yardım bağlantıları yalnızca tıkladığınızda tarayıcınızda açılır.
 
-## Tarama 1.000.000 dosyada durdu
+## Windows sürücümü taramadan önce Unlost neden bir klasör istiyor?
 
-Yoğun kullanılan bir Windows sürücüsünde milyonlarca silinmiş dosya kaydı olabilir; çoğu geçici dosyadır. Bu sürüm ilk bir milyonu bellekte tutar. Daha küçük bir birimin imaj dosyasını kullanın ya da planlanan oturum deposunu bekleyin.
+Yoğun kullanılan bir Windows sürücüsünde milyonlarca silinmiş dosya kaydı olabilir. Unlost siz göz atarken bu listeyi küçük bir veritabanında tutar ve bu veritabanı taradığınız diske yazılmamalıdır. Olağan yeri uygulamanın veri klasörüdür (`%LOCALAPPDATA%\Unlost` ya da taşınabilir exe'nin yanındaki `data`); bu klasör taradığınız sürücüyle aynı fiziksel diskteyse Unlost başka bir diskte, örneğin kurtaracağınız diskte, bir klasör ister ve onu bir kurtarma hedefi gibi denetler. Orada `Unlost scan data` klasörünü açar; taramayı ya da uygulamayı kapattığınızda siler. 3 milyon silinmiş dosyası olan 1 TB'lık bir Windows sürücüsünün taraması orada yaklaşık 650 MB kullandı.
 
 ## Rapor nerede?
 

@@ -1,13 +1,15 @@
 //! Process and token facts: elevation, the signed-in user's SID, starting the broker through
-//! UAC, and checking which program sits at the other end of a pipe.
+//! UAC, checking which program sits at the other end of a pipe, randomness and memory use.
 
 use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree, WAIT_OBJECT_0};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows::Win32::Security::{
     GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
 };
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetExitCodeProcess, GetProcessId, OpenProcess, OpenProcessToken,
     PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
@@ -193,6 +195,20 @@ pub fn process_alive(pid: u32) -> bool {
     }
 }
 
+/// Fills `buf` from the system's cryptographic random number generator.
+pub fn random_bytes(buf: &mut [u8]) -> Result<()> {
+    unsafe { BCryptGenRandom(None, buf, BCRYPT_USE_SYSTEM_PREFERRED_RNG) }.ok()?;
+    Ok(())
+}
+
+/// This process's peak working set and peak private (committed) bytes so far.
+pub fn memory_peaks() -> Option<(u64, u64)> {
+    let mut c = PROCESS_MEMORY_COUNTERS::default();
+    let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c, size) }.ok()?;
+    Some((c.PeakWorkingSetSize as u64, c.PeakPagefileUsage as u64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +221,15 @@ mod tests {
         let me = process_image(std::process::id()).unwrap();
         assert!(same_file(&me, &std::env::current_exe().unwrap()));
         assert!(process_alive(std::process::id()));
+    }
+
+    #[test]
+    fn randomness_and_memory() {
+        let (mut a, mut b) = ([0u8; 32], [0u8; 32]);
+        random_bytes(&mut a).unwrap();
+        random_bytes(&mut b).unwrap();
+        assert_ne!(a, b);
+        let (ws, private) = memory_peaks().unwrap();
+        assert!(ws > 0 && private > 0);
     }
 }

@@ -75,7 +75,7 @@ pub fn read_content(
             stats.missing_bytes += gap;
             pos += gap;
         }
-        if run_start < pos && run_start + run.len * cluster <= pos {
+        if run_start < pos && run_start.saturating_add(run.len.saturating_mul(cluster)) <= pos {
             continue;
         }
         let run_end = run_start

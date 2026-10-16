@@ -67,6 +67,6 @@ jobs:
       - name: Run each target briefly
         working-directory: fuzz
         run: |
-          for t in ntfs_volume file_record runlist recycle_info vhdx_image partitions; do
+          for t in ntfs_volume file_record runlist recycle_info vhdx_image partitions content_location scan_batch; do
             cargo +nightly fuzz run "$t" -- -max_total_time=60
           done

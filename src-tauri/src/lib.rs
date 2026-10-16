@@ -26,7 +26,7 @@ use unlost_core::settings::{self, Settings};
 use unlost_core::shadow::{ShadowCopy, ShadowEntry};
 use unlost_core::sources::{self, SourceSpec};
 use unlost_core::writer::RunSummary;
-use unlost_core::{Error, system};
+use unlost_core::{Error, system, workspace};
 use unlost_formats::partition::Partition;
 
 type CmdResult<T> = Result<T, ErrorPayload>;
@@ -281,12 +281,44 @@ async fn image_partitions(path: String) -> CmdResult<Vec<Partition>> {
     blocking(move || sources::image_partitions(Path::new(&path))).await
 }
 
+/// Starts a scan. Its session database goes to the app's data folder, or to `Unlost scan data`
+/// inside `workspace` when given; either way only after the guard found the folder on none of
+/// the source's disks. The UI asks for `workspace` when the data folder shares a disk with the
+/// source (`workspace_same_disk`).
 #[tauri::command]
-async fn scan_start(app: AppHandle, source: SourceSpec) -> CmdResult<ScanSummary> {
+async fn scan_start(
+    app: AppHandle,
+    source: SourceSpec,
+    workspace: Option<String>,
+    confirm_unknown: Option<bool>,
+) -> CmdResult<ScanSummary> {
     let state = app.state::<AppState>();
     let engine = state.engine.clone();
     let admin = source.needs_admin();
-    let call = engine.call(Request::Scan { source }, admin).map_err(err)?;
+    let dir = match &workspace {
+        Some(folder) => {
+            let f = PathBuf::from(folder);
+            if !f.is_absolute() || !f.is_dir() {
+                return Err(err(Error::Refused(format!(
+                    "{folder} is not an existing folder"
+                ))));
+            }
+            workspace::chosen_dir(&f)
+        }
+        None => workspace::default_dir(&state.data_dir),
+    };
+    let spec = source.clone();
+    let dir = blocking(move || {
+        let dir = workspace::approve(&spec, &dir, confirm_unknown.unwrap_or(false))?;
+        workspace::sweep(&dir);
+        Ok(dir)
+    })
+    .await?;
+    let request = Request::Scan {
+        source,
+        workspace: Some(dir.to_string_lossy().into_owned()),
+    };
+    let call = engine.call(request, admin).map_err(err)?;
     state.cancels.lock().insert("scan".into(), call.canceller());
     let handle = app.clone();
     let r = blocking(move || {
@@ -413,8 +445,10 @@ async fn recover_start(app: AppHandle, request: recover::RecoverRequest) -> CmdR
 
 pub fn run() {
     let data_dir = settings::data_dir();
+    // Databases a crash left behind; scans with a folder the user picked sweep theirs on use.
+    workspace::sweep(&workspace::default_dir(&data_dir));
     let state = AppState {
-        engine: Engine::new(),
+        engine: Engine::new(workspace::default_dir(&data_dir)),
         settings: RwLock::new(Settings::load(&data_dir)),
         sid: system::current_user_sid().unwrap_or_default(),
         cancels: Mutex::new(HashMap::new()),
@@ -476,6 +510,12 @@ pub fn run() {
             guard_check,
             recover_start,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Unlost");
+        .build(tauri::generate_context!())
+        .expect("error while building Unlost")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Session databases are caches of this run only.
+                app.state::<AppState>().engine.forget_all();
+            }
+        });
 }

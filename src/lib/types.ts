@@ -19,6 +19,7 @@ export type Reason =
   | { code: "runsOutsideVolume" }
   | { code: "sizeImplausible" }
   | { code: "extensionMissing" }
+  | { code: "tooFragmented"; runs: number }
   | { code: "encrypted" }
   | { code: "compressed" }
   | { code: "wofCompressed" }

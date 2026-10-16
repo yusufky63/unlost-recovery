@@ -55,3 +55,17 @@ path = "fuzz_targets/partitions.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "content_location"
+path = "fuzz_targets/content_location.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scan_batch"
+path = "fuzz_targets/scan_batch.rs"
+test = false
+doc = false
+bench = false

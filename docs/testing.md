@@ -26,7 +26,7 @@ cargo test --workspace
 
    CI runs each target for a short time on every push.
 4. **Windows-made VHDX scenarios** (`scripts/make-fixtures.ps1`, `crates/core/tests/vhdx_scenarios.rs`). See below.
-5. **Elevated tests** (`crates/core/tests/elevated.rs`): raw reads of the system volume (including its last sectors), shadow copy listing, browsing and reading, and a full scan of the newest shadow copy (or of `UNLOST_SCAN_DEVICE`). Ignored by default; run from an elevated prompt:
+5. **Elevated tests** (`crates/core/tests/elevated.rs`): raw reads of the system volume (including its last sectors), shadow copy listing, browsing and reading, and a full scan of the newest shadow copy (or of `UNLOST_SCAN_DEVICE`) into a session database under `UNLOST_WORKSPACE`, a folder on another physical disk (the test refuses one on the source's disk, like the app; it prints the time, peak memory, database size and query times, and deletes the database afterwards). Ignored by default; run from an elevated prompt:
 
    ```bash
    cargo test -p unlost-core --test elevated -- --ignored --nocapture

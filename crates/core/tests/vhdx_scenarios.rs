@@ -99,15 +99,26 @@ fn vhdx_scenarios() {
 fn check(dir: &Path, m: &Manifest) {
     let image = dir.join(&m.image);
     let before = hash_file(&image).unwrap();
-    let session = Session::new();
+    let workspace = tempfile::tempdir().unwrap();
+    let session = Session::new(workspace.path());
     let sink = Collect(Mutex::new(HashMap::new()), AtomicU32::new(0));
     let source = SourceSpec::Image {
         path: image.to_string_lossy().into(),
         partition: None,
     };
-    let summary: ScanSummary =
-        serde_json::from_value(session.handle(1, Request::Scan { source }, &sink).unwrap())
-            .unwrap();
+    let summary: ScanSummary = serde_json::from_value(
+        session
+            .handle(
+                1,
+                Request::Scan {
+                    source,
+                    workspace: None,
+                },
+                &sink,
+            )
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(summary.label, "UNLOST", "{}", m.image);
     let page: Page = serde_json::from_value(
         session
@@ -192,6 +203,7 @@ fn check(dir: &Path, m: &Manifest) {
                     Request::Read {
                         scan: summary.scan,
                         record: row.record,
+                        sealed: None,
                     },
                     &sink,
                 )

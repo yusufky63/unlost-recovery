@@ -1,8 +1,13 @@
 //! The UI's view of the engine: one call API, two backends. Image files are scanned in this
 //! process; raw volumes and shadow copies go to the elevated broker. Results come back as a
 //! stream of events per call, with backpressure so a fast reader cannot flood memory.
+//!
+//! Scan results always end up in this process's session databases. A broker scan's findings
+//! arrive as data events and are written here as they come; queries and selections are then
+//! answered here for every scan, and only reads of a broker scan go back to the broker.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
@@ -13,8 +18,9 @@ use serde_json::Value;
 use crate::broker::BrokerClient;
 use crate::error::ErrorPayload;
 use crate::job::ProgressSnapshot;
-use crate::protocol::Request;
+use crate::protocol::{Request, ScanSummary};
 use crate::session::{Session, Sink};
+use crate::sources::SourceSpec;
 use crate::{Error, Result, system};
 
 /// Scan ids at or above this belong to the broker's session.
@@ -141,10 +147,15 @@ impl Call {
     }
 }
 
+fn is_broker_scan(scan: u32) -> bool {
+    scan >= BROKER_SCAN_BASE
+}
+
 impl Engine {
-    pub fn new() -> Arc<Self> {
+    /// `workspace` is the default folder for session databases; see [`crate::workspace`].
+    pub fn new(workspace: impl Into<PathBuf>) -> Arc<Self> {
         Arc::new(Engine {
-            session: Arc::new(Session::new()),
+            session: Arc::new(Session::new(workspace)),
             router: Arc::new(Router::default()),
             broker: Mutex::new(None),
             next: AtomicU64::new(1),
@@ -174,37 +185,50 @@ impl Engine {
         }
     }
 
+    /// Drops every scan and deletes its database; called when the app closes.
+    pub fn forget_all(&self) {
+        self.session.forget_all();
+    }
+
     /// Sends a request. `admin` requests use the broker unless this process is elevated.
     pub fn call(&self, req: Request, admin: bool) -> Result<Call> {
-        let remote = match &req {
-            Request::Query { scan, .. }
-            | Request::Read { scan, .. }
-            | Request::Entries { scan, .. }
-            | Request::Forget { scan } => *scan >= BROKER_SCAN_BASE,
-            _ => admin && !system::is_elevated(),
-        };
-        let id = self.next.fetch_add(1, Ordering::Relaxed);
-        if remote {
-            let broker = self
-                .broker
-                .lock()
-                .clone()
-                .filter(|b| b.alive())
-                .ok_or(Error::NeedsAdmin)?;
-            let rx = self.router.register(id);
-            if let Err(e) = broker.send(id, &req) {
-                self.router.done(id, Err(ErrorPayload::from(&e)));
-                return Err(e);
+        let to_broker = admin && !system::is_elevated();
+        match req {
+            Request::Scan { source, workspace } if to_broker => self.broker_scan(source, workspace),
+            // Results of every scan live here.
+            Request::Query { .. } | Request::Entries { .. } => Ok(self.local(req)),
+            Request::Read { scan, record, .. } if is_broker_scan(scan) => {
+                let sealed = self.session.sealed(scan, record)?;
+                self.remote(&Request::Read {
+                    scan,
+                    record,
+                    sealed: Some(sealed),
+                })
             }
-            let (b, cid) = (broker.clone(), self.next.fetch_add(1, Ordering::Relaxed));
-            return Ok(Call {
-                id,
-                rx,
-                cancel: Arc::new(move || {
-                    let _ = b.send(cid, &Request::Cancel { id });
-                }),
-            });
+            Request::Forget { scan } => {
+                if is_broker_scan(scan)
+                    && let Some(b) = self.live_broker()
+                {
+                    // The broker only holds the source handle; a lost message costs nothing.
+                    let _ = b.send(self.next_id(), &Request::Forget { scan });
+                }
+                Ok(self.local(req))
+            }
+            req if to_broker => self.remote(&req),
+            req => Ok(self.local(req)),
         }
+    }
+
+    fn next_id(&self) -> u64 {
+        self.next.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn live_broker(&self) -> Option<Arc<BrokerClient>> {
+        self.broker.lock().clone().filter(|b| b.alive())
+    }
+
+    fn local(&self, req: Request) -> Call {
+        let id = self.next_id();
         let rx = self.router.register(id);
         let (session, router) = (self.session.clone(), self.router.clone());
         std::thread::spawn(move || {
@@ -213,11 +237,68 @@ impl Engine {
             router.done(id, r.map_err(|e| ErrorPayload::from(&e)));
         });
         let session = self.session.clone();
-        Ok(Call {
+        Call {
             id,
             rx,
             cancel: Arc::new(move || session.cancel(id)),
+        }
+    }
+
+    fn remote(&self, req: &Request) -> Result<Call> {
+        let broker = self.live_broker().ok_or(Error::NeedsAdmin)?;
+        let id = self.next_id();
+        let rx = self.router.register(id);
+        if let Err(e) = broker.send(id, req) {
+            self.router.done(id, Err(ErrorPayload::from(&e)));
+            return Err(e);
+        }
+        let (b, cid) = (broker.clone(), self.next_id());
+        Ok(Call {
+            id,
+            rx,
+            cancel: Arc::new(move || {
+                let _ = b.send(cid, &Request::Cancel { id });
+            }),
         })
+    }
+
+    /// A scan in the broker, its findings written into a database here as they arrive. The
+    /// caller sees the broker's progress and, at the end, a summary counted from that
+    /// database.
+    fn broker_scan(&self, source: SourceSpec, workspace: Option<String>) -> Result<Call> {
+        let store = self
+            .session
+            .create_store(workspace.as_deref().map(std::path::Path::new))?;
+        let call = self.remote(&Request::Scan {
+            source,
+            workspace: None,
+        })?;
+        let (id, cancel) = (call.id, call.canceller());
+        let (tx, rx) = sync_channel(CHANNEL_DEPTH);
+        let session = self.session.clone();
+        std::thread::spawn(move || {
+            let progress = tx.clone();
+            let r = call
+                .wait(
+                    |p| {
+                        let _ = progress.try_send(Event::Progress(p));
+                    },
+                    |batch| store.ingest(batch),
+                )
+                .and_then(|v| {
+                    let mut summary: ScanSummary = serde_json::from_value(v)?;
+                    if !is_broker_scan(summary.scan) {
+                        return Err(Error::Broker(format!("scan id {}", summary.scan)));
+                    }
+                    // The database is the truth for what the UI shows.
+                    (summary.files, summary.counts) = store.finish()?;
+                    let scan = summary.scan;
+                    session.adopt(scan, store);
+                    Ok(serde_json::to_value(summary)?)
+                });
+            let _ = tx.send(Event::Done(r.map_err(|e| ErrorPayload::from(&e))));
+        });
+        Ok(Call { id, rx, cancel })
     }
 }
 
@@ -231,7 +312,7 @@ mod tests {
     fn local_calls_stream_and_cancel_on_write_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let (path, photo) = crate::session::tests_support::image(tmp.path());
-        let engine = Engine::new();
+        let engine = Engine::new(tmp.path().join("sessions"));
         let source = SourceSpec::Image {
             path: path.to_string_lossy().into(),
             partition: None,
@@ -239,7 +320,13 @@ mod tests {
         let mut ticks = 0;
         let summary: ScanSummary = serde_json::from_value(
             engine
-                .call(Request::Scan { source }, false)
+                .call(
+                    Request::Scan {
+                        source,
+                        workspace: None,
+                    },
+                    false,
+                )
                 .unwrap()
                 .wait(|_| ticks += 1, |_| Ok(()))
                 .unwrap(),
@@ -259,16 +346,15 @@ mod tests {
             .unwrap();
         assert_eq!(page["total"], 3);
 
+        let read = || Request::Read {
+            scan: summary.scan,
+            record: 40,
+            sealed: None,
+        };
         let mut got = Vec::new();
         let r: ReadResult = serde_json::from_value(
             engine
-                .call(
-                    Request::Read {
-                        scan: summary.scan,
-                        record: 40,
-                    },
-                    false,
-                )
+                .call(read(), false)
                 .unwrap()
                 .wait(
                     |_| {},
@@ -285,25 +371,36 @@ mod tests {
 
         // A destination write error cancels the read and surfaces that error.
         let r = engine
-            .call(
-                Request::Read {
-                    scan: summary.scan,
-                    record: 40,
-                },
-                false,
-            )
+            .call(read(), false)
             .unwrap()
             .wait(|_| {}, |_| Err(Error::Other("disk full".into())));
         assert!(matches!(r, Err(Error::Other(m)) if m == "disk full"));
 
-        // Broker scans need the broker.
+        // Broker scans need the broker for reads; their results would be here.
         let r = engine.call(
-            Request::Query {
+            Request::Read {
                 scan: BROKER_SCAN_BASE + 1,
-                query: Query::default(),
+                record: 40,
+                sealed: None,
             },
             false,
         );
-        assert!(matches!(r, Err(Error::NeedsAdmin)));
+        assert!(matches!(r, Err(Error::Refused(_))));
+        let r = engine.call(
+            Request::Scan {
+                source: SourceSpec::Volume {
+                    root: "C:\\".into(),
+                },
+                workspace: None,
+            },
+            true,
+        );
+        if !system::is_elevated() {
+            assert!(matches!(r, Err(Error::NeedsAdmin)));
+        }
+
+        // Closing the app deletes the databases.
+        engine.forget_all();
+        assert!(!tmp.path().join("sessions").exists());
     }
 }
