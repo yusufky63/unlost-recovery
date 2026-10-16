@@ -5,10 +5,10 @@
   "description": "Open-source deleted-file recovery for Windows. Read-only by construction, honest about every file.",
   "license": "MIT",
   "author": "yusufky63",
-  "homepage": "https://github.com/yusufky63/unlost",
+  "homepage": "https://github.com/yusufky63/unlost-recovery",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yusufky63/unlost.git"
+    "url": "https://github.com/yusufky63/unlost-recovery.git"
   },
   "type": "module",
   "packageManager": "pnpm@9.15.4",
