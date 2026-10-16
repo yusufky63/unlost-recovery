@@ -4,10 +4,15 @@
 //      $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9333"; pnpm tauri dev
 // 2. Optionally build the synthetic demo volume (no administrator rights needed):
 //      cargo run -p unlost-core --example demo_image -- target/demo.img
-// 3. Run: node scripts/screenshots.mjs [--out docs/screenshots] [--image target/demo.img]
+// 3. Run: node scripts/screenshots.mjs [--out docs/screenshots] [--image target/demo.img] [--demo]
 //
 // It drives the real app, switches theme, width and language, and saves PNGs. No browser is
 // launched, so there is nothing to clean up afterwards.
+//
+// Screenshots for the repository must not show the machine they were taken on. `--demo`
+// replaces the drive list, the data folder path and the Recycle Bin counts with the neutral
+// sample below after each page has loaded; `--image` scans the synthetic demo volume.
+// Screenshots of a real machine stay out of the repository.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -22,6 +27,27 @@ const themes = opt("--themes", "light,dark").split(",");
 const widths = opt("--widths", "1440").split(",").map(Number);
 const lang = opt("--lang", null);
 const source = opt("--source", null);
+const demo = args.includes("--demo");
+
+const GB = 1024 ** 3;
+const DEMO_DRIVES = [
+  { root: "C:\\", label: "Windows", fileSystem: "NTFS", total: 476 * GB, free: 182 * GB, volume: "", disks: [0], system: true, removable: false, readable: true, media: "ssd", trim: "on", model: "NVMe SSD", binItems: 12, binBytes: 3 * GB },
+  { root: "D:\\", label: "Data", fileSystem: "NTFS", total: 931 * GB, free: 412 * GB, volume: "", disks: [1], system: false, removable: false, readable: true, media: "hdd", trim: "off", model: "SATA HDD", binItems: 3, binBytes: 0.4 * GB },
+  { root: "E:\\", label: "CAMERA", fileSystem: "exFAT", total: 59 * GB, free: 21 * GB, volume: "", disks: [2], system: false, removable: true, readable: true, media: "sdCard", trim: "off", model: "SD card reader", binItems: 0, binBytes: 0 },
+  { root: "F:\\", label: "BACKUP", fileSystem: "NTFS", total: 29 * GB, free: 11 * GB, volume: "", disks: [3], system: false, removable: true, readable: true, media: "usbStick", trim: "off", model: "USB flash drive", binItems: 0, binBytes: 0 },
+];
+const DEMO_JS = `(() => {
+  const s = window.__unlost.getState();
+  window.__unlost.setState({
+    drives: ${JSON.stringify(DEMO_DRIVES)},
+    phones: [],
+    shadows: null,
+    settings: { ...s.settings, language: "system", theme: "system" },
+    sourceRoot: "F:\\\\",
+    info: { ...s.info, dataDir: "C:\\\\Users\\\\Alex\\\\AppData\\\\Local\\\\Unlost", appDisks: [0], adminReady: false, portable: false },
+  });
+  return true;
+})()`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -89,6 +115,11 @@ for (const width of widths) {
     for (const page of pages) {
       await evaluate(`window.__unlost.getState().go(${JSON.stringify(page)}); document.getElementById('main')?.scrollTo(0, 0)`);
       await sleep(1000);
+      // Pages refresh their data when they open, so the sample goes in after that.
+      if (demo) {
+        await evaluate(DEMO_JS);
+        await sleep(300);
+      }
       const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
       const file = join(outDir, `${page}-${theme}${widths.length > 1 ? `-${width}` : ""}${lang ? `-${lang}` : ""}.png`);
       await writeFile(file, Buffer.from(shot.data, "base64"));

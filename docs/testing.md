@@ -58,7 +58,7 @@ Without fixtures the test passes with a note; CI sets `UNLOST_REQUIRE_FIXTURES=1
 
 ## Manual checks on real hardware
 
-Before a release, record what Unlost finds on: a SATA HDD, an NVMe SSD with TRIM, a USB stick (NTFS and FAT32), an SD card in a USB reader, a BitLocker-unlocked volume, and a phone (expected: shown as a media device, not scannable). The development machine so far: a TRIM SSD system volume (via its shadow copy), a second SSD, and an NTFS USB stick (10,748 deleted files listed, a sample recovered intact through the broker).
+Before a release, record what Unlost finds on: a SATA HDD, an NVMe SSD with TRIM, a USB stick (NTFS and FAT32), an SD card in a USB reader, a BitLocker-unlocked volume, and a phone (expected: shown as a media device, not scannable). So far: a TRIM SSD system volume (through its shadow copy), a second SSD, an NTFS USB stick scanned and recovered from through the broker, and a phone shown as a media device.
 
 ## Screenshots
 
@@ -66,4 +66,4 @@ Before a release, record what Unlost finds on: a SATA HDD, an NVMe SSD with TRIM
 cargo run -p unlost-core --example demo_image -- target/demo.img
 ```
 
-Then start the app with a DevTools port and run the capture script (see the header of `scripts/screenshots.mjs`). The demo volume is synthetic (label `UNLOSTTEST`), so screenshots show no real user's files.
+Then start the app with a DevTools port and run the capture script with `--image target/demo.img --demo` (see the header of `scripts/screenshots.mjs`). The demo volume is synthetic (label `UNLOSTTEST`) and `--demo` swaps the drive list, data folder path and Recycle Bin counts for a neutral sample, so repository screenshots show nothing about the machine they were taken on. Screenshots of a real machine never go into the repository.
