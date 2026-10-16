@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/formats", "crates/core", "src-tauri"]
+# Fuzz targets build with cargo-fuzz on Linux CI, outside the workspace.
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/yusufky63/unlost"
+authors = ["yusufky63"]
+rust-version = "1.90"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
+
+# Parsers run on large volumes; keep tests fast without giving up debug assertions.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+opt-level = 1

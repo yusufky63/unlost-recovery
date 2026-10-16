@@ -1,0 +1,62 @@
+{
+  "name": "unlost",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Open-source deleted-file recovery for Windows. Read-only by construction, honest about every file.",
+  "license": "MIT",
+  "author": "yusufky63",
+  "homepage": "https://github.com/yusufky63/unlost",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yusufky63/unlost.git"
+  },
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "tauri": "tauri",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
+    "portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-portable.ps1",
+    "fixtures": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-fixtures.ps1",
+    "screenshots": "node scripts/screenshots.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/dm-sans": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@fontsource-variable/space-grotesk": "5.3.0",
+    "@tauri-apps/api": "2.12.4",
+    "@tauri-apps/plugin-dialog": "2.8.3",
+    "@tauri-apps/plugin-opener": "2.7.2",
+    "i18next": "26.4.6",
+    "lucide-react": "1.57.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-i18next": "17.0.18",
+    "zustand": "5.0.15"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@tailwindcss/vite": "4.3.3",
+    "@tauri-apps/cli": "2.12.3",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "eslint": "10.12.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.7",
+    "globals": "17.13.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  }
+}
