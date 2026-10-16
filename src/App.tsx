@@ -47,7 +47,7 @@ export function App() {
   if (!isDesktop()) {
     return (
       <div className="flex h-full items-center justify-center">
-        <EmptyState icon={<MonitorX size={20} strokeWidth={1.75} />} title={t("app.name")} body={t("common.desktopOnly")} />
+        <EmptyState icon={<MonitorX size={20} strokeWidth={1.75} />} title={t("app.fullName")} body={t("common.desktopOnly")} />
       </div>
     );
   }

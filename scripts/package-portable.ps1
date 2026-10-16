@@ -12,11 +12,11 @@ $stage = Join-Path $out 'portable'
 if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-Copy-Item -LiteralPath $exe -Destination (Join-Path $stage 'Unlost.exe')
-Set-Content -LiteralPath (Join-Path $stage 'portable') -Encoding ascii -Value 'Unlost keeps its settings and WebView2 profile in the data folder next to the exe while this file exists, so running it from a USB stick keeps its writes off the disk you recover from.'
+Copy-Item -LiteralPath $exe -Destination (Join-Path $stage 'Unlost Recovery.exe')
+Set-Content -LiteralPath (Join-Path $stage 'portable') -Encoding ascii -Value 'Unlost Recovery keeps its settings and WebView2 profile in the data folder next to the exe while this file exists, so running it from a USB stick keeps its writes off the disk you recover from.'
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $stage 'LICENSE.txt')
 
-$zip = Join-Path $out "Unlost_${version}_x64_portable.zip"
+$zip = Join-Path $out "Unlost-Recovery_${version}_x64_portable.zip"
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
 Remove-Item -LiteralPath $stage -Recurse -Force
 

@@ -4,6 +4,7 @@ import type { Messages } from "./en";
 export const tr: Messages = {
   app: {
     name: "Unlost",
+    fullName: "Unlost Recovery",
     tagline: "Sürücünüze hiç yazmayan silinmiş dosya kurtarma.",
   },
   nav: {
@@ -33,7 +34,7 @@ export const tr: Messages = {
     selected: "{{count}} seçili · {{size}}",
     scanning: "Taranıyor…",
     loading: "Yükleniyor…",
-    desktopOnly: "Bu görünüm için Unlost masaüstü uygulamasını açın.",
+    desktopOnly: "Bu görünüm için Unlost Recovery masaüstü uygulamasını açın.",
     unknown: "Bilinmiyor",
     none: "Yok",
     size: "Boyut",

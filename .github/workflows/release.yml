@@ -44,4 +44,4 @@ jobs:
           $notes = if ($m.Success) { $m.Groups[1].Value.Trim() } else { "See CHANGELOG.md." }
           $notes += "`n`n### Verify your download`nSHA-256 checksums are in SHA256SUMS.txt. Builds are not code-signed yet; see the README. Prefer the portable zip, started from a different disk than the one you recover from."
           Set-Content -Path release-notes.md -Value $notes -Encoding utf8
-          gh release create $tag --draft --title "Unlost $version" --notes-file release-notes.md (Get-ChildItem release -File | ForEach-Object FullName)
+          gh release create $tag --draft --title "Unlost Recovery $version" --notes-file release-notes.md (Get-ChildItem release -File | ForEach-Object FullName)

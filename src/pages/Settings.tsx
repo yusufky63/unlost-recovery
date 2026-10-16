@@ -62,7 +62,7 @@ export function SettingsPage() {
           </ul>
         </Card>
         <Card>
-          <CardHeader eyebrow={t("settings.about")} title={t("settings.version", { version: info?.version ?? "" })} hint={t("settings.license")} />
+          <CardHeader eyebrow={t("settings.about")} title={t("app.fullName")} hint={`${t("settings.version", { version: info?.version ?? "" })} · ${t("settings.license")}`} />
           <dl className="divide-y divide-line text-[13px]">
             <div className="flex flex-wrap justify-between gap-2 px-4 py-2.5">
               <dt className="text-ink-muted">{t("settings.mode")}</dt>

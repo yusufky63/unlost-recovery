@@ -1,12 +1,12 @@
-# Unlost
+# Unlost Recovery
 
-Open-source deleted-file recovery for Windows 10 and 11. It reads your drives without ever writing to them, offers the intact copies Windows already keeps before any scan, and tells you for every file what was actually checked. Nothing is ever called "100%".
+Unlost Recovery (Unlost for short) is open-source deleted-file recovery for Windows 10 and 11. It reads your drives without ever writing to them, offers the intact copies Windows already keeps before any scan, and tells you for every file what was actually checked. Nothing is ever called "100%".
 
 [Türkçe](README.tr.md) · [How it works](docs/architecture.md) · [FAQ](docs/faq.md) · [Research behind it](docs/research.md)
 
 ![First screen in light mode](docs/screenshots/start-light.png)
 
-Unlost is a sibling of [ReClaim Cleaner](https://github.com/yusufky63/reclaim-cleaner). It is a separate app on purpose: the cleaner deletes files as a normal user; Unlost reads raw disks as administrator and must never write to the disk it recovers from.
+Unlost Recovery is a sibling of [ReClaim Cleaner](https://github.com/yusufky63/reclaim-cleaner). It is a separate app on purpose: the cleaner deletes files as a normal user; Unlost reads raw disks as administrator and must never write to the disk it recovers from.
 
 ## What it does
 

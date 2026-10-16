@@ -1,12 +1,12 @@
-# Unlost
+# Unlost Recovery
 
-Windows 10 ve 11 için açık kaynak silinmiş dosya kurtarma aracı. Sürücülerinizi hiç yazmadan okur, herhangi bir taramadan önce Windows'un zaten sakladığı sağlam kopyaları sunar ve her dosya için gerçekte neyin kontrol edildiğini söyler. Hiçbir şeye "%100" denmez.
+Unlost Recovery (kısaca Unlost), Windows 10 ve 11 için açık kaynak bir silinmiş dosya kurtarma aracıdır. Sürücülerinizi hiç yazmadan okur, herhangi bir taramadan önce Windows'un zaten sakladığı sağlam kopyaları sunar ve her dosya için gerçekte neyin kontrol edildiğini söyler. Hiçbir şeye "%100" denmez.
 
 [English](README.md) · [Nasıl çalışır](docs/architecture.md) · [SSS](docs/faq.tr.md) · [Arkasındaki araştırma](docs/research.md)
 
 ![Açık temada ilk ekran](docs/screenshots/start-light.png)
 
-Unlost, [ReClaim Cleaner](https://github.com/yusufky63/reclaim-cleaner)'ın kardeş uygulamasıdır. Bilerek ayrı bir uygulamadır: temizleyici normal kullanıcı olarak dosya siler; Unlost ise ham diskleri yönetici olarak okur ve kurtardığı diske asla yazmamalıdır.
+Unlost Recovery, [ReClaim Cleaner](https://github.com/yusufky63/reclaim-cleaner)'ın kardeş uygulamasıdır. Bilerek ayrı bir uygulamadır: temizleyici normal kullanıcı olarak dosya siler; Unlost ise ham diskleri yönetici olarak okur ve kurtardığı diske asla yazmamalıdır.
 
 ## Ne yapar
 
