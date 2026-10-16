@@ -89,7 +89,10 @@ function New-Scenario([string]$Name, [scriptblock]$Populate, [int]$SizeMB = 64) 
 function Add-File($Root, $Files, [string]$Rel, [byte[]]$Bytes, [bool]$Deleted, [string]$Expect) {
   $full = Join-Path $Root $Rel.TrimStart('\')
   [void][IO.Directory]::CreateDirectory("\\?\" + (Split-Path -Parent $full))
-  [IO.File]::WriteAllBytes("\\?\$full", $Bytes)
+  # Write through and flush to the disk: a file deleted while its data is still only in the
+  # cache never reaches the disk at all, and would rightly be reported as zeros.
+  $fs = New-Object IO.FileStream("\\?\$full", [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 65536, [IO.FileOptions]::WriteThrough)
+  try { $fs.Write($Bytes, 0, $Bytes.Length); $fs.Flush($true) } finally { $fs.Dispose() }
   [void]$Files.Add([ordered]@{ path = $Rel; size = $Bytes.Length; sha256 = (Get-Sha256 $Bytes); deleted = $Deleted; expect = $Expect })
 }
 

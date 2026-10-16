@@ -43,10 +43,11 @@ impl BootSector {
         if !spc.is_power_of_two() {
             return Err(bad(format!("{spc} sectors per cluster")));
         }
-        let cluster_size = bps * spc;
-        if cluster_size > MAX_CLUSTER {
-            return Err(bad(format!("{cluster_size}-byte clusters")));
-        }
+        // 4096-byte sectors times 2^20 sectors overflows u32; found by the fuzzer.
+        let cluster_size = bps
+            .checked_mul(spc)
+            .filter(|&c| c <= MAX_CLUSTER)
+            .ok_or_else(|| bad(format!("{bps} x {spc}-byte clusters")))?;
         let total_sectors = le::u64(b, 0x28).unwrap_or(0);
         let total_clusters = total_sectors / u64::from(spc);
         if total_clusters == 0 {
@@ -124,6 +125,10 @@ mod tests {
         assert!(BootSector::parse(&boot(8, 0xE0)).is_err());
         let mut b = boot(8, 0xF6);
         b[0x30..0x38].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(BootSector::parse(&b).is_err());
+        // 4096-byte sectors with 2^20 sectors per cluster: overflow, not a panic.
+        let mut b = boot(0xEC, 0xF6);
+        b[0x0B..0x0D].copy_from_slice(&4096u16.to_le_bytes());
         assert!(BootSector::parse(&b).is_err());
     }
 }
