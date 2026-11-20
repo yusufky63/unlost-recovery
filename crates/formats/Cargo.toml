@@ -17,4 +17,4 @@ serde = { version = "=1.0.229", features = ["derive", "rc"] }
 thiserror = "=2.0.21"
 
 [dev-dependencies]
-sha2 = "=0.10.9"
+sha2 = "=0.11.1"
